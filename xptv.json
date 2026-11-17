@@ -390,5 +390,390 @@
       "api": "csp_upload5",
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/upload5.js"
     }
+,
+    {
+      "name": "AV01",
+      "type": 3,
+      "api": "csp_av01",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/av01.js"
+    },
+    {
+      "name": "OpenLoad",
+      "type": 3,
+      "api": "csp_openload",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/openload.js"
+    },
+    {
+      "name": "JavTubs",
+      "type": 3,
+      "api": "csp_javtubs",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javtubs.js"
+    },
+    {
+      "name": "JavLust",
+      "type": 3,
+      "api": "csp_javlust",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javlust.js"
+    },
+    {
+      "name": "jav.do",
+      "type": 3,
+      "api": "csp_javdo",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javdo.js"
+    },
+    {
+      "name": "4KPorno",
+      "type": 3,
+      "api": "csp_4kporno",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/4kporno.js"
+    },
+    {
+      "name": "5LXTV",
+      "type": 3,
+      "api": "csp_5lxtv",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/5lxtv.js"
+    },
+    {
+      "name": "18AV",
+      "type": 3,
+      "api": "csp_18av",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/18av.js"
+    },
+    {
+      "name": "24JAV",
+      "type": 3,
+      "api": "csp_24jav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/24jav.js"
+    },
+    {
+      "name": "51视频",
+      "type": 3,
+      "api": "csp_51shipin",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/51shipin.js"
+    },
+    {
+      "name": "91吃瓜",
+      "type": 3,
+      "api": "csp_cg91",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/cg91.js"
+    },
+    {
+      "name": "91大赛",
+      "type": 3,
+      "api": "csp_dycg66",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/dycg66.js"
+    },
+    {
+      "name": "91porn",
+      "type": 3,
+      "api": "csp_a91porn",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/a91porn.js"
+    },
+    {
+      "name": "AnimeSex",
+      "type": 3,
+      "api": "csp_animesex",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/animesex.js"
+    },
+    {
+      "name": "AnySex",
+      "type": 3,
+      "api": "csp_anysex",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/anysex.js"
+    },
+    {
+      "name": "AsianViralHub",
+      "type": 3,
+      "api": "csp_asianviralhub",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/asianviralhub.js"
+    },
+    {
+      "name": "ASMR吧",
+      "type": 3,
+      "api": "csp_asmrba",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/asmrba.js"
+    },
+    {
+      "name": "ASMRHoney",
+      "type": 3,
+      "api": "csp_asmrhoney",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/asmrhoney.js"
+    },
+    {
+      "name": "Av77",
+      "type": 3,
+      "api": "csp_av77",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/av77.js"
+    },
+    {
+      "name": "AVPorn",
+      "type": 3,
+      "api": "csp_avporn",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/avporn.js"
+    },
+    {
+      "name": "AV影社",
+      "type": 3,
+      "api": "csp_0817hyjx",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/0817hyjx.js"
+    },
+    {
+      "name": "Beeg",
+      "type": 3,
+      "api": "csp_beeg",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/beeg.js"
+    },
+    {
+      "name": "ChineseAV",
+      "type": 3,
+      "api": "csp_chineseav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/chineseav.js"
+    },
+    {
+      "name": "Ero",
+      "type": 3,
+      "api": "csp_ero",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/ero.js"
+    },
+    {
+      "name": "黑料不打烊",
+      "type": 3,
+      "api": "csp_hlbdy",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/hlbdy.js"
+    },
+    {
+      "name": "HornyJav",
+      "type": 3,
+      "api": "csp_hornyjav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/hornyjav.js"
+    },
+    {
+      "name": "黄视频",
+      "type": 3,
+      "api": "csp_huangvideo",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/huangvideo.js"
+    },
+    {
+      "name": "IPornBase",
+      "type": 3,
+      "api": "csp_ipornbase",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/ipornbase.js"
+    },
+    {
+      "name": "JaSex",
+      "type": 3,
+      "api": "csp_jasex",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/jasex.js"
+    },
+    {
+      "name": "Javass",
+      "type": 3,
+      "api": "csp_javass",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javass.js"
+    },
+    {
+      "name": "JavCC",
+      "type": 3,
+      "api": "csp_javcc",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javcc.js"
+    },
+    {
+      "name": "JavCT",
+      "type": 3,
+      "api": "csp_javct",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javct.js"
+    },
+    {
+      "name": "JavDay",
+      "type": 3,
+      "api": "csp_javday",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javday.js"
+    },
+    {
+      "name": "JavFeed",
+      "type": 3,
+      "api": "csp_javfeed",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javfeed.js"
+    },
+    {
+      "name": "JavHeo",
+      "type": 3,
+      "api": "csp_javheo",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javheo.js"
+    },
+    {
+      "name": "JavHey",
+      "type": 3,
+      "api": "csp_javhey",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javhey.js"
+    },
+    {
+      "name": "JavMit",
+      "type": 3,
+      "api": "csp_javmit",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javmit.js"
+    },
+    {
+      "name": "JavMove",
+      "type": 3,
+      "api": "csp_javmove",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javmove.js"
+    },
+    {
+      "name": "JavNeon",
+      "type": 3,
+      "api": "csp_javneon",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javneon.js"
+    },
+    {
+      "name": "JavPlayer",
+      "type": 3,
+      "api": "csp_javplayer",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javplayer.js"
+    },
+    {
+      "name": "JavPortals",
+      "type": 3,
+      "api": "csp_javportals",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javportals.js"
+    },
+    {
+      "name": "JavRate",
+      "type": 3,
+      "api": "csp_javrate",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javrate.js"
+    },
+    {
+      "name": "Javtiful",
+      "type": 3,
+      "api": "csp_javtiful",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javtiful.js"
+    },
+    {
+      "name": "LissAV",
+      "type": 3,
+      "api": "csp_lissav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/lissav.js"
+    },
+    {
+      "name": "Manko",
+      "type": 3,
+      "api": "csp_manko",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/manko.js"
+    },
+    {
+      "name": "麻豆AI",
+      "type": 3,
+      "api": "csp_madouai",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/madouai.js"
+    },
+    {
+      "name": "蘑菇视频",
+      "type": 3,
+      "api": "csp_mogu",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/mogu.js"
+    },
+    {
+      "name": "NJAV",
+      "type": 3,
+      "api": "csp_njav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/njav.js"
+    },
+    {
+      "name": "NoodleMagazine",
+      "type": 3,
+      "api": "csp_noodle",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/noodle.js"
+    },
+    {
+      "name": "ONE一个",
+      "type": 3,
+      "api": "csp_one",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/one.js"
+    },
+    {
+      "name": "Perverzija",
+      "type": 3,
+      "api": "csp_perverzija",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/perverzija.js"
+    },
+    {
+      "name": "PimpBunny",
+      "type": 3,
+      "api": "csp_pimpbunny",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/pimpbunny.js"
+    },
+    {
+      "name": "PubJav",
+      "type": 3,
+      "api": "csp_pubjav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/pubjav.js"
+    },
+    {
+      "name": "Px8x",
+      "type": 3,
+      "api": "csp_px8x",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/px8x.js"
+    },
+    {
+      "name": "七猫短剧",
+      "type": 3,
+      "api": "csp_7mao",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/7mao.js"
+    },
+    {
+      "name": "肉多多",
+      "type": 3,
+      "api": "csp_rdd22",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/rdd22.js"
+    },
+    {
+      "name": "丝瓜视频",
+      "type": 3,
+      "api": "csp_siguaspw",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/siguaspw.js"
+    },
+    {
+      "name": "ToJav",
+      "type": 3,
+      "api": "csp_tojav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/tojav.js"
+    },
+    {
+      "name": "TopJAV",
+      "type": 3,
+      "api": "csp_topjav",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/topjav.js"
+    },
+    {
+      "name": "UltraThots",
+      "type": 3,
+      "api": "csp_ultrathots",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/ultrathots.js"
+    },
+    {
+      "name": "悟空传媒",
+      "type": 3,
+      "api": "csp_wukong",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/wukong.js"
+    },
+    {
+      "name": "YesPorn",
+      "type": 3,
+      "api": "csp_yesporn",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/yesporn.js"
+    },
+    {
+      "name": "Bitch Lives",
+      "type": 3,
+      "api": "csp_bitch",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/bitch.js"
+    },
+    {
+      "name": "蜜夜AI",
+      "type": 3,
+      "api": "csp_miyexai",
+      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/miyexai.js"
+    }
   ]
 }

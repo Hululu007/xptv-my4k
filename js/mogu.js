@@ -1,0 +1,1204 @@
+// ---- Buffer 兼容垫片（XPTV 沙箱无 Buffer；仅覆盖 from/toString 的 base64/utf8/latin1/hex 用法） ----
+if (typeof Buffer === 'undefined') {
+  var Buffer = (function () {
+    var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    function utf8Encode(s) {
+      var out = [];
+      for (var i = 0; i < s.length; i++) {
+        var c = s.charCodeAt(i);
+        if (c < 0x80) out.push(c);
+        else if (c < 0x800) { out.push(0xC0 | (c >> 6), 0x80 | (c & 0x3F)); }
+        else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+          var c2 = s.charCodeAt(i + 1);
+          if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+            var cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+            out.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+            i++;
+          } else out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F));
+        } else out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F));
+      }
+      return out;
+    }
+    function utf8Decode(bytes) {
+      var out = '';
+      for (var i = 0; i < bytes.length;) {
+        var b = bytes[i];
+        if (b < 0x80) { out += String.fromCharCode(b); i++; }
+        else if ((b & 0xE0) === 0xC0) { out += String.fromCharCode(((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F)); i += 2; }
+        else if ((b & 0xF0) === 0xE0) { out += String.fromCharCode(((b & 0x0F) << 12) | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F)); i += 3; }
+        else if ((b & 0xF8) === 0xF0) {
+          var cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3F) << 12) | ((bytes[i + 2] & 0x3F) << 6) | (bytes[i + 3] & 0x3F);
+          cp -= 0x10000;
+          out += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+          i += 4;
+        } else { out += String.fromCharCode(b); i++; }
+      }
+      return out;
+    }
+    function b64Encode(bytes) {
+      var out = '';
+      for (var i = 0; i < bytes.length; i += 3) {
+        var b1 = bytes[i], b2 = i + 1 < bytes.length ? bytes[i + 1] : 0, b3 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+        out += B64[b1 >> 2] + B64[((b1 & 3) << 4) | (b2 >> 4)] + (i + 1 < bytes.length ? B64[((b2 & 15) << 2) | (b3 >> 6)] : '=') + (i + 2 < bytes.length ? B64[b3 & 63] : '=');
+      }
+      return out;
+    }
+    function b64Decode(s) {
+      s = String(s || '').replace(/[^A-Za-z0-9+/=]/g, '');
+      var out = [];
+      for (var i = 0; i < s.length; i += 4) {
+        var e1 = B64.indexOf(s.charAt(i)), e2 = B64.indexOf(s.charAt(i + 1)), e3 = B64.indexOf(s.charAt(i + 2)), e4 = B64.indexOf(s.charAt(i + 3));
+        if (e1 < 0 || e2 < 0) break;
+        out.push((e1 << 2) | (e2 >> 4));
+        if (e3 >= 0) out.push(((e2 & 15) << 4) | (e3 >> 2));
+        if (e4 >= 0) out.push(((e3 & 3) << 6) | e4);
+      }
+      return out;
+    }
+    function wrap(bytes) {
+      var arr = bytes.slice();
+      arr.toString = function (enc) {
+        enc = String(enc || 'utf8').toLowerCase();
+        if (enc === 'base64') return b64Encode(arr);
+        if (enc === 'latin1' || enc === 'binary') { var s = ''; for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]); return s; }
+        if (enc === 'hex') { var h = ''; for (var j = 0; j < arr.length; j++) h += ('0' + arr[j].toString(16)).slice(-2); return h; }
+        return utf8Decode(arr);
+      };
+      return arr;
+    }
+    function from(input, enc) {
+      if (typeof input === 'string') {
+        enc = String(enc || 'utf8').toLowerCase();
+        if (enc === 'base64') return wrap(b64Decode(input));
+        if (enc === 'latin1' || enc === 'binary') { var b = []; for (var i = 0; i < input.length; i++) b.push(input.charCodeAt(i) & 0xFF); return wrap(b); }
+        if (enc === 'hex') { var hb = []; for (var k = 0; k + 1 < input.length; k += 2) hb.push(parseInt(input.substr(k, 2), 16)); return wrap(hb); }
+        return wrap(utf8Encode(input));
+      }
+      if (input && typeof input.length === 'number') {
+        var ab = [];
+        for (var m = 0; m < input.length; m++) ab.push(input[m] & 0xFF);
+        return wrap(ab);
+      }
+      return wrap([]);
+    }
+    return { from: from, isBuffer: function (x) { return Array.isArray(x) && typeof x.toString === 'function'; } };
+  })();
+}
+
+
+// 蘑菇视频 https://moguds.cc —— 视频站（由用户提供的 upload-2.js 移植）
+// 2026-11-07 重建：站方分类体系已整体重排（旧 cate68～cate288 全线失效，站方返回空模板页；
+//   旧 cate3～cate67 大批改名错位），按 2026-11-07 实测 live map 重建为 7 大区 60 细分；
+//   另修 CDN：d1uy7itup9paqh.cloudfront.net 分发已死（TLS 握手即断，同 VM 上其他 cloudfront
+//   分发正常；站方 cdn_lines 现为 dfdf + mkdscvxr3w34.sxtmo.com，已无 cloudfront），
+//   封面与播单改回 dfdf 主线、sxtmo 备选，不再改写为 cloudfront；
+//   播单内分片走 d3s00p19cjdhyv.cloudfront.net（实测 206 通），播单本身只负责指路；
+//   详情页仍走 window.__ARCHIVE_PLAYER__.rawPath + CDN 基址。
+// 2026-11-07 返工（播放断点）：用户真机 19:45 复测——列表/分类/封面全通（均走
+//   moguds.cc + dfdf.tjacq.com），唯独播放不行。VM 实测定性：播单、分片、密钥三腿
+//   在 VM 上全通（任意头组合均 200），且 openssl 以播单内 key+IV 解密首分片得
+//   到合法 TS（188 对齐 0x47 同步 10918/10919），内容本身无问题；断点在播单把
+//   播放器指到第三个域 d3s00p19cjdhyv.cloudfront.net 取分片——该腿在手机上从
+//   未验证过，而本站自己的 d1uy7 cloudfront 分发已死在先，同类腿不可信。
+//   实测 dfdf / sxtmo 两线与 cloudfront 分片逐字节相同（同一 .ts 路径三域
+//   同内容）、密钥三域相同且全片共用同一 key+IV，故改写播单即可：分片改指
+//   播单自身 origin（dfdf），相对密钥 URI 补成绝对地址，播放器全程只跟
+//   已验证的 dfdf 说话；分片不经过代理透传（字节无需改动，与 24JAV 剥 PNG
+//   头不同），代理只改写 7KB 清单文本。play() 给本地 /proxy/m3u8 地址
+//   （Ero/JavFeed 同款，前缀取 reqIn?.server 动态值，绝不写死），取不到
+//   时回落原直链；代理拉不到有效清单时 302 回原地址，不比旧行为更差。
+// 2026-11-07 返工二轮（播放仍失败）：同轮同包里 24JAV 的本地代理在手机上通了，
+//   蘑菇的没通。找不同点：v1 只改写清单文本，分片与密钥仍由播放器直连 dfdf；
+//   24JAV 是全程字节代理，播放器只跟蜘蛛说话。v2 照 24JAV 先例改：清单改写行
+//   一律指回本地代理（完整 http:// 绝对地址），分片字节经代理透传（支持 Range），
+//   密钥（16 字节）同样走代理取回；播放器不再直连 dfdf / cloudfront。
+//   mogu-fetch Worker 的 /f 只放行 moguds.cc（实测 dfdf 回 400 bad target），
+//   代理取数只能走直连 req.get（同 24JAV）。
+// 2026-11-07 第三轮（列表时有时无）：用户 21:33 真机——猫源蘑菇能加载列表分类，
+//   7 大区仍全是“暂无数据”，有时个别分类有内容，多刷新几次又全没内容。
+//   VM 重复取样坐实（probe_list / probe_v2 / probe_burst 日志）：站方不空回、不挑战、
+//   不 429——每个 200 响应字节稳定、满卡（首页 12/12 + 10 轮对照 9/10 均 103 卡，
+//   cate37 12/12 + 10/10 均 20 卡，Worker 腿首页/分类各 16/16、详情 3/3、搜索有/无
+//   结果均正常，无结果搜索页 75KB 0 卡是站方真空）；病因是“慢腿 + 顺序 + 静默空”：
+//   直连腿健康时 1～8 秒、偶发长 stall（cate23 9.5→18.2→20 秒超时，cate60 连续
+//   20 秒超时，v2 第 10 轮直连首页 8 秒超时），而旧 getHtml 先直连 20 秒、再 Worker
+//   20 秒，直连一 stall 就吃掉 App 超时预算、Worker 兜底够不着；且 home/category/
+//   search 取页失败全部静默回 []，失败与真空分不出来，App 只能显示“暂无数据”。
+//   修法：getHtml 改 Worker 优先（mogu-fetch /f 只放行 moguds.cc，正好覆盖列表/
+//   详情/搜索全部文字页；实测分类重复请求多 <1 秒、CF 缓存命中，最稳最快）、直连
+//   8 秒回落、内容校验（>2000 字节且无挑战页才算真 HTML）；取页全失败时 category/
+//   search/home 带 msg 回空列表（av123 同款先例），失败不再伪装成真空。
+//   播放代理 v2（/proxy/* 全程字节代理）本轮一字不动——列表不走它，已证伪无关。
+// 2026-11-08 第四轮（猫源仍播不了，REX 1.0.5 正常）：用户 14:08 真机——猫源蘑菇
+//   列表/分类/内容/封面全通，唯独播放不行；同包 REX lai_mogu 1.0.5 正常（走已部署
+//   mogu-hls Worker）。VM 逐级对照同一片（XV072-桃喵喵）坐实站方没变：dfdf/sxtmo
+//   两播单均 200、201 分片仍走 d3s00p19cjdhyv.cloudfront.net、密钥仍 16 字节
+//   sdj3nxuuw3koukvs、AES 解密 0x47 同步 11359/11359；mogu-hls Worker /m3u8 全链
+//   通（改写后 0 处上游域、201 分片全指 /seg/、密钥 16B、首分片 Range 206、整片
+//   200、解密 11359/11359）。断点在猫源唯一的播放腿：play() 把播单包进本地
+//   /proxy/m3u8，代理取数走蜘蛛 req.get（axios）到 dfdf——v2 的 7/7 全通只在
+//   fetch 垫片 harness 里验过，从未经真机确认；v2 上线当晚只确认了列表稳，没确认
+//   过播放。REX 同款 Worker 地址在用户手机上已证能播，本地代理腿从未证过。
+//   修法（照 sextb v10 / javcc 猫源先例，播单直接走 Worker）：detail() 出三条可选线
+//   （Worker / 直连 / 本地代理），vod_play_from 以 $$$ 分组、组内集以 # 连接；
+//   play() 只原样返回 detail 定好的地址，不再统一包一层本地代理（旧版连 Worker
+//   地址也包进去，等于 Worker 白走、仍死在 req.get 到 dfdf 这一腿）；本地代理实现
+//   （rewriteM3u8/m3u8Proxy/fetchBytes）一字不动，只留作“本地代理”线兜底。
+//   sxtmo 播单已探通（与 dfdf 同字节、同 201 分片、同 cloudfront 分片宿主），但与
+//   dfdf 只差播单宿主、分片腿完全相同，未单独立线，保持与 REX 1.0.5 双线同构。
+// 分类：7 大区作顶级分类，各区细分走筛选卡片 filters.sub；6 个分组父类
+//   （cate13/22/36/47/55/59）站方本身无内容，不列为细分，默认取各组首个有内容的子类。
+// 列表：<a href="/video/\d+/"> 卡片，封面 data-src 走 dfdf.tjacq.com（实测 200）
+// 详情：__ARCHIVE_PLAYER__.rawPath 组直链（首选 dfdf，备选 sxtmo）；播放直链 parse:0
+// 字幕：详情预热 + 播放带 subs（与 32 个带芯猫源同一套聚合芯：迅雷/迅雷看看/SubtitleCat 三槽，带时长显示与名字+时长去重）
+// 清晰度：站方每片只给一条单码率播单（实测无多档切换机制），故不设假清晰度选单
+const KEY = 'py_mogu';
+const HOST = 'https://moguds.cc';
+const CDN = 'https://dfdf.tjacq.com';
+const ALT_CDN = 'https://mkdscvxr3w34.sxtmo.com'; // 站方 cdn_lines 第二线；d1uy7 cloudfront 分发已死（2026-11-07 实测 TLS 断），不再使用
+// 取数 Worker（2026-11-05 用户已部署：https://mogu-fetch.li768435813.workers.dev，根回 mogu fetch ok；
+// /f 只放行 moguds.cc，列表/详情/搜索文字页全覆盖，dfdf 媒体不在其放行范围——播放仍走本地 /proxy/*）。
+// 本轮起 Worker 优先、直连回落（见 getHtml）：Worker 腿实测最稳（分类 16/16、重复请求多 <1 秒）。
+const FETCH_WORKER = 'https://mogu-fetch.li768435813.workers.dev';
+// 纯 JS b64url（与 REX 版同一实现；App 内 Buffer 可用，但与 REX 共用一份更稳）
+const B64T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function b64url(s) {
+  const bytes = [];
+  const str = String(s || '');
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c < 128) bytes.push(c);
+    else if (c < 2048) { bytes.push(192 | (c >> 6), 128 | (c & 63)); }
+    else if (c < 55296 || c >= 57344) { bytes.push(224 | (c >> 12), 128 | ((c >> 6) & 63), 128 | (c & 63)); }
+    else {
+      i++;
+      const c2 = str.charCodeAt(i);
+      const cp = 65536 + (((c & 1023) << 10) | (c2 & 1023));
+      bytes.push(240 | (cp >> 18), 128 | ((cp >> 12) & 63), 128 | ((cp >> 6) & 63), 128 | (cp & 63));
+    }
+  }
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i], b1 = i + 1 < bytes.length ? bytes[i + 1] : 0, b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += B64T[b0 >> 2] + B64T[((b0 & 3) << 4) | (b1 >> 4)] + (i + 1 < bytes.length ? B64T[((b1 & 15) << 2) | (b2 >> 6)] : '=') + (i + 2 < bytes.length ? B64T[b2 & 63] : '=');
+  }
+  return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function viaWorker(url) {
+  return FETCH_WORKER.replace(/\/+$/, '') + '/f/' + b64url(url);
+}
+// 播放 Worker（2026-11-07 用户已部署：https://mogu-hls.li768435813.workers.dev，根回 mogu-hls ok；
+// 播单改写 + 分片字节透传，REX 1.0.5 正片线同款地址形态；本轮起猫源播单主线改走它）。
+const HLS_WORKER = 'https://mogu-hls.li768435813.workers.dev';
+function workerUrl(master) {
+  return HLS_WORKER + '/m3u8?u=' + b64url(master) + '&r=' + b64url(HOST + '/');
+}
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+const ZONES = [
+  { id: "zone_featured", name: "🔥今日精选", default: "route_home_featured", subs: [{ n: "今日推荐", v: "route_home_featured" }, { n: "X映画原创热播", v: "cate3" }, { n: "X站免费精选内容", v: "cate4" }, { n: "观看热榜", v: "cate5" }, { n: "逆天乱伦", v: "cate6" }, { n: "绿帽龟奴", v: "cate7" }, { n: "走马探花", v: "cate8" }, { n: "网曝黑料大瓜", v: "cate9" }, { n: "明星 AI 换脸", v: "cate10" }, { n: "网红主播激情大秀", v: "cate11" }, { n: "爆款收藏", v: "cate12" }] },
+  { id: "zone_media", name: "🎬传媒原创", default: "cate14", subs: [{ n: "🎬素人自摄", v: "cate14" }, { n: "💿麻豆热剧", v: "cate15" }, { n: "🍬糖心系列", v: "cate16" }, { n: "🍮果冻精选", v: "cate17" }, { n: "👼天使映画", v: "cate18" }, { n: "🌈天美热作", v: "cate19" }, { n: "✨星空夜欲", v: "cate20" }, { n: "🍑蜜桃诱惑", v: "cate21" }] },
+  { id: "zone_creator", name: "💃网黄", default: "cate23", subs: [{ n: "综合网黄", v: "cate23" }, { n: "桥本香菜", v: "cate24" }, { n: "小水水", v: "cate25" }, { n: "刘玥", v: "cate26" }, { n: "Ellie", v: "cate27" }, { n: "米菲兔", v: "cate28" }, { n: "辛尤里", v: "cate29" }, { n: "唐伯虎", v: "cate30" }, { n: "饼干姐姐", v: "cate31" }, { n: "吴梦梦", v: "cate32" }, { n: "台北娜娜", v: "cate33" }, { n: "玩偶姐姐", v: "cate34" }, { n: "柚子猫", v: "cate35" }] },
+  { id: "zone_asia", name: "🌸日韩", default: "cate37", subs: [{ n: "精选推荐", v: "cate37" }, { n: "FC2  无码", v: "cate38" }, { n: "淫妻母狗", v: "cate39" }, { n: "中文字幕", v: "cate40" }, { n: "素人AV", v: "cate41" }, { n: "JK制服", v: "cate42" }, { n: "口爆内射", v: "cate43" }, { n: "师生乱欲", v: "cate44" }, { n: "御姐足交", v: "cate45" }, { n: "家庭禁忌", v: "cate46" }] },
+  { id: "zone_west", name: "🗽欧美", default: "cate48", subs: [{ n: "欧美综合", v: "cate48" }, { n: "欧美辣妹", v: "cate49" }, { n: "欧美巨乳", v: "cate50" }, { n: "欧美熟女", v: "cate51" }, { n: "欧美SM", v: "cate52" }, { n: "欧美足控", v: "cate53" }, { n: "捷克木屋", v: "cate54" }] },
+  { id: "zone_anime", name: "🎞️动漫", default: "cate56", subs: [{ n: "综合动漫", v: "cate56" }, { n: "MMD-热舞系列", v: "cate57" }, { n: "MMD-纯爱3D", v: "cate58" }] },
+  { id: "zone_teach", name: "📚性爱教学", default: "cate60", subs: [{ n: "王竹子的SM教学频道", v: "cate60" }, { n: "中指通一下", v: "cate61" }, { n: "Misa.米砂", v: "cate62" }, { n: "小哥哥艾理", v: "cate63" }, { n: "verzz 异物梗色", v: "cate64" }, { n: "薇傲的性趣", v: "cate65" }, { n: "一三蜜桃说 Dr.Yishan", v: "cate66" }, { n: "Carrie雨千", v: "cate67" }] }
+];
+function filtersFor(zone) {
+  if (!zone || !zone.subs || zone.subs.length <= 1) return [];
+  return [{ key: 'sub', name: '细分分类', value: zone.subs.map((s) => ({ n: s.n, v: s.v })) }];
+}
+
+function unescapeHtml(s) {
+  return String(s || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (m, n) => String.fromCharCode(parseInt(n, 10)));
+}
+
+function cleanLabel(s) {
+  return unescapeHtml(String(s || '').replace(/<[^>]+>/g, ''))
+    .replace(/[\r\n\t]+/g, ' ').replace(/[$#]/g, '').trim();
+}
+
+function absUrl(u, host) {
+  u = String(u || '').trim();
+  if (!u) return '';
+  if (u.startsWith('//')) return 'https:' + u;
+  if (u.startsWith('/')) return host + u;
+  return u;
+}
+
+// 站方 data-original/data-src 常写成 https:/dfdf...（单斜杠）；图与播单在 dfdf 与 sxtmo
+// 两线内容逐字节相同，只修 scheme、不改域名（2026-11-07：d1uy7 cloudfront 分发已死，
+// 再改写过去封面与播单全断；分片域名以播单内为准，不由这里改写）
+function normUrl(u) {
+  let s = String(u || '').trim();
+  if (!s) return '';
+  // 站方 cdn_lines 常写 https:/dfdf（单斜杠）或 https:///（三斜杠），一律压成标准 https://
+  s = s.replace(/^(https?:)\/*/, '$1//');
+  s = s.replace(/^(https?:)\/([^/])/, '$1//$2');
+  if (s.startsWith('dfdf.tjacq.com/')) s = 'https://' + s;
+  if (s.startsWith('mkdscvxr3w34.sxtmo.com/')) s = 'https://' + s;
+  return s;
+}
+
+function pickPlayBase(bases) {
+  const list = Array.isArray(bases) ? bases : [];
+  const dfdf = list.find((b) => b.includes('dfdf.tjacq.com'));
+  if (dfdf) return dfdf;
+  return list[0] || ALT_CDN;
+}
+
+function isChallengeHtml(html) {
+  const s = String(html || '');
+  if (s.length < 200) return false;
+  return s.includes('Just a moment') || s.includes('cf-browser-verification')
+    || s.includes('Attention Required') || s.includes('__CF$cv$params')
+    || s.includes('challenge-platform') || s.includes('cf-challenge')
+    || s.includes('developers.cloudflare.com');
+}
+
+function looksRealHtml(html) {
+  const s = String(html || '');
+  // 真页最小也是 75KB 级模板（无结果搜索页实测 75055 字节）；短回包/挑战页一律不算
+  if (s.length <= 2000) return false;
+  return !isChallengeHtml(s);
+}
+
+async function fetchHtmlOnce(url, timeoutMs) {
+  try {
+    const r = await $fetch.get(url, {
+      headers: { 'User-Agent': UA, 'Referer': HOST + '/', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },
+      timeout: timeoutMs || 8000,
+    });
+    if (r.status && r.status !== 200) return '';
+    return typeof r.data === 'string' ? r.data : '';
+  } catch (e) { return ''; }
+}
+
+async function getHtml(path) {
+  let url = String(path || '');
+  if (url.startsWith('//')) url = 'https:' + url;
+  else if (url.startsWith('/')) url = HOST + url;
+  // Worker 优先：直连腿慢且偶发长 stall（健康 1～8 秒、偶发 >8 秒甚至 20 秒超时），
+  // 旧顺序先直连 20 秒会把 App 超时预算吃光、Worker 兜底够不着；Worker 腿实测最稳
+  // （分类 16/16、重复请求多 <1 秒、CF 缓存命中）。两腿各 8 秒，总预算 ≤16 秒。
+  // Worker 未部署/回 400 时自动落到直连，不比旧行为更差。
+  const via = await fetchHtmlOnce(viaWorker(url), 8000);
+  if (looksRealHtml(via)) return via;
+  const direct = await fetchHtmlOnce(url, 8000);
+  if (looksRealHtml(direct)) return direct;
+  return '';
+}
+
+// 字幕聚合芯的取数原语：统一回 {status, body}；设备 axios 走配置调用
+// （responseType text 保证 JSON 原文不被提前解析），本机桩走 req.get。
+
+function clean(s) {
+  return unescapeHtml(String(s || '').replace(/<[^>]+>/g, ''))
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+// ---------------- 字幕聚合 (与 32 个带芯猫源同一套 Layer A，2026-11-02 定版) ----------------
+// 槽位：迅雷（键序 [番号, 紧凑番号]）> 迅雷看看（完整键序）> SubtitleCat；
+// 键序逐个查、首中即停；命中后严过滤（须含番号或片名全文，无回退）；
+// 合并序 = 档位 -> 语言（简中>繁中>双语>英文>日文>其他）-> 分数；
+// 全局上限 10、单槽软上限 8；总预算 6s、失败全静默；无结果时 play 不带 subs 键。
+// 时长后缀：oracle 给毫秒（>100000 除 1000），无时长不显示、不编造；
+// 去重键 = 语言 + 小写名（去扩展名）+ 秒（无时长记 nodur），同名同时长才算重复。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function extractPic(inner) {
+  for (const attr of ['data-original', 'data-src', 'src']) {
+    const m = inner.match(new RegExp(attr + "=['\"]([^'\"]+)['\"]", 'i'));
+    if (m) {
+      const cand = m[1].trim();
+      if (cand && !['loading.jpg', 'loading.png', 'placeholder', 'default'].some((b) => cand.toLowerCase().includes(b))) {
+        if (cand.startsWith('/')) return CDN + cand;
+        return cand;
+      }
+    }
+  }
+  return '';
+}
+
+function parseCards(html, host) {
+  const items = [];
+  const seen = new Set();
+  const re = /<a[^>]+href=["'](\/video\/\d+\/?)["'][^>]*>([\s\S]*?)<\/a>/g;
+  let m;
+  while ((m = re.exec(String(html || ''))) !== null) {
+    const vUrl = m[1].trim();
+    const inner = m[2];
+    if (seen.has(vUrl)) continue;
+    const pic = extractPic(inner);
+    let title = '';
+    const tM = inner.match(/(?:title=["']([^"']+)["']|alt=["']([^"']+)["']|<h\d[^>]*>([\s\S]*?)<\/h\d>)/i);
+    if (tM) title = cleanLabel(tM[1] || tM[2] || tM[3] || '');
+    if (!title) {
+      const lines = cleanLabel(inner).split(/\s+/).filter((x) => x.length > 3);
+      if (lines.length) title = lines[0];
+    }
+    const durM = inner.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+    if (vUrl && (pic || title)) {
+      seen.add(vUrl);
+      items.push({
+        vod_id: vUrl,
+        vod_name: title || '蘑菇精彩视频',
+        vod_pic: pic ? normUrl(pic.startsWith('http') ? pic : absUrl(pic, host)) : '',
+        vod_remarks: durM ? durM[1] : '',
+      });
+    }
+  }
+  return items;
+}
+
+function parseCdnLines(html) {
+  const bases = [];
+  const m = String(html || '').match(/cdn_lines\s*=\s*'([^']+)'/);
+  if (m) {
+    try {
+      const arr = JSON.parse(m[1].replace(/\\\//g, '/'));
+      for (const it of arr || []) {
+        const b = normUrl(String((it && it.cdnLine) || '').replace(/\/+$/, ''));
+        if (b.startsWith('http') && !bases.includes(b)) bases.push(b);
+      }
+    } catch (e) { /* ignore */ }
+  }
+  if (!bases.includes(CDN)) bases.push(CDN);
+  if (!bases.includes(ALT_CDN)) bases.push(ALT_CDN);
+  return bases;
+}
+
+function cleanStreamUrl(raw) {
+  if (!raw) return '';
+  const clean = String(raw).replace(/\\u002F/g, '/').replace(/\\\//g, '/').trim();
+  let m = clean.match(/https?:\/\/[^\s"'$<>]+\.m3u8[^\s"'$<>]*/i);
+  if (m) return m[0];
+  m = clean.match(/https?:\/\/[^\s"'$<>]+\.mp4[^\s"'$<>]*/i);
+  if (m) return m[0];
+  return clean;
+}
+
+function extractPlayerVarUrl(html, varName) {
+  const re = new RegExp('var\\s+' + varName + '\\s*=\\s*(\\{[\\s\\S]*?\\});');
+  const m = String(html || '').match(re);
+  if (!m) return '';
+  try {
+    const obj = JSON.parse(m[1]);
+    if (obj && obj.url) return cleanStreamUrl(String(obj.url));
+  } catch (e) { /* ignore */ }
+  const um = m[1].match(/["']url["']\s*:\s*["']([^"']*)["']/);
+  if (um) return cleanStreamUrl(um[1]);
+  return '';
+}
+
+function extractPlayStream(html) {
+  let m = html.match(/id=["']article-videos["'][^>]*data-url=["']([^"']+)["']/i)
+    || html.match(/data-url=["']([^"']+)["'][^>]*id=["']article-videos["']/i);
+  if (m) {
+    let cand = m[1].trim().replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+    if (cand.startsWith('//')) cand = 'https:' + cand;
+    else if (cand.startsWith('/')) cand = CDN + cand;
+    else if (!cand.startsWith('http')) cand = CDN + '/' + cand;
+    return { url: cand, viaDataUrl: true };
+  }
+  m = html.match(/(?:var\s+raw\s*=\s*|video_url\s*:\s*|url\s*:\s*)["'](https?:\/\/[^\s"'$<>]+\.m3u8[^\s"'$<>]*)["']/i);
+  if (m) return { url: m[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/'), viaDataUrl: false };
+  m = html.match(/https?:\/\/[^\s"'$<>]+\.m3u8[^\s"'$<>]*/i);
+  if (m) return { url: m[0].replace(/\\u002F/g, '/').replace(/\\\//g, '/'), viaDataUrl: false };
+  m = html.match(/https?:\/\/[^\s"'$<>]+\.mp4[^\s"'$<>]*/i);
+  if (m) return { url: m[0].replace(/\\u002F/g, '/').replace(/\\\//g, '/'), viaDataUrl: false };
+  return { url: '', viaDataUrl: false };
+}
+
+// 2026-11-05 站方详情页改版：#article-videos 已消失，播放器改由
+// window.__ARCHIVE_PLAYER__ = {"rawPath":"\/video\/<日期>\/<id>\/<hash>.m3u8",
+//   "vttFile":"","posterImg":"https:\/dfdf...\/image\/...","cdnLine":"https:\/dfdf.tjacq.com",...}
+// 提供播单相对路径；rawPath 接 CDN 基址（优先 cdn_lines 的 dfdf 线）即为播单。
+function unescJsonStr(s) {
+  return String(s || '').replace(/\\u002F/g, '/').replace(/\\\//g, '/').replace(/\\"/g, '"');
+}
+
+function extractArchivePlayer(html) {
+  const out = { rawPath: '', cdnLine: '', posterImg: '', vttFile: '' };
+  const m = String(html || '').match(/window\.__ARCHIVE_PLAYER__\s*=\s*\{/);
+  if (!m) return out;
+  const seg = String(html || '').slice(m.index, m.index + 4000);
+  const rp = seg.match(/"rawPath"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (rp) out.rawPath = unescJsonStr(rp[1]);
+  const cl = seg.match(/"cdnLine"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (cl) out.cdnLine = unescJsonStr(cl[1]);
+  const pi = seg.match(/"posterImg"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (pi) out.posterImg = unescJsonStr(pi[1]);
+  const vf = seg.match(/"vttFile"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (vf) out.vttFile = unescJsonStr(vf[1]);
+  return out;
+}
+
+function archivePlayUrl(html) {
+  const ap = extractArchivePlayer(html);
+  if (!ap.rawPath) return '';
+  let raw = ap.rawPath.trim();
+  if (!raw) return '';
+  if (raw.startsWith('http')) return normUrl(raw);
+  if (raw.startsWith('//')) return normUrl('https:' + raw);
+  const bases = parseCdnLines(html);
+  let base = pickPlayBase(bases);
+  if (ap.cdnLine) base = normUrl(ap.cdnLine);
+  if (!base) base = ALT_CDN;
+  return normUrl(base.replace(/\/+$/, '') + (raw.startsWith('/') ? raw : '/' + raw));
+}
+
+// ---------- 播放清单代理 v2（同 24JAV 已验证形态；2026-11-07 返工二轮） ----------
+// v1 只改写清单文本，分片与密钥仍由播放器直连 dfdf；24JAV 同轮同包已证：
+// 播放器直连上游 CDN 的腿在手机上不可靠，只有全程走蜘蛛代理的形态通。
+// v2 照 24JAV 先例改：清单改写行一律指回本地代理（完整 http:// 绝对地址），
+// 分片字节经代理透传（支持 Range，便于拖动）；密钥（16 字节）同样走代理取回。
+// 播放器全程只跟蜘蛛说话，不再直连 dfdf / cloudfront。取不到时 302 回原地址。
+function unb64url(s) {
+  return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}
+// 构造本地代理地址（js2p://_WEB_ 为 App 动态地址 scheme，同 Ero/24JAV 先例；
+// 前缀取 reqIn?.server 动态值，绝不写死）
+function proxyUrl(reqIn, path, targetUrl, referer) {
+  try {
+    const server = reqIn?.server;
+    const dynamic = server?.address?.()?.dynamic || 'js2p://_WEB_';
+    const prefix = server?.prefix || ('/spider/' + KEY + '/3');
+    return `${dynamic}${prefix}${path}?u=${b64url(targetUrl)}&r=${b64url(referer || '')}`;
+  } catch (e) { return ''; }
+}
+// 取字节（清单/分片/密钥通用）：30s 超时、2 次尝试；失败返回 null，走 302 降级
+async function fetchBytes(url, referer) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await $fetch.get(url, {
+        headers: { 'User-Agent': UA, 'Referer': referer || HOST + '/' },
+        timeout: 30000,
+        });
+      if (r.status >= 200 && r.status < 300 && r.data) return Buffer.from(r.data);
+    } catch (e) { /* 重试，落空走 302 降级 */ }
+  }
+  return null;
+}
+// 改写清单正文：# 行的 URI="..."（密钥）与 master 的 variant 行走查询串形式
+// /proxy/m3u8?u=&r=；媒体清单的分片行走路径段形式 /proxy/<b64>/<b64>.ts（末尾
+// 加 .ts 后缀过 ffmpeg 分片后缀白名单；b64url 字母表无 '.'，代理入口先剥后缀
+// 再解码，无歧义）。selfBase 是完整 http:// 绝对基址（取请求 Host 拼），
+// 改写后的行不再是裸路径/上游直链，播放器无需以 js2p:// 为基址解析、也无需直连上游。
+function rewriteM3u8(raw, playlistUrl, selfBase, referer) {
+  const isMaster = String(raw).includes('#EXT-X-STREAM-INF');
+  const lines = String(raw).split(/\r?\n/);
+  const out = lines.map((line) => {
+    const s = line.trim();
+    if (!s) return line;
+    if (s.startsWith('#')) {
+      if (s.includes('URI="')) {
+        return line.replace(/URI="([^"]+)"/g, (all, uri) => {
+          try {
+            const abs = new URL(uri, playlistUrl).toString();
+            return `URI="${selfBase}/proxy/m3u8?u=${b64url(abs)}&r=${b64url(referer || '')}"`;
+          } catch (e) { return all; }
+        });
+      }
+      return line;
+    }
+    try {
+      const abs = new URL(s, playlistUrl).toString();
+      if (isMaster) return `${selfBase}/proxy/m3u8?u=${b64url(abs)}&r=${b64url(referer || '')}`;
+      return `${selfBase}/proxy/${b64url(abs)}/${b64url(referer || '-')}.ts`;
+    } catch (e) { return line; }
+  });
+  return out.join('\n');
+}
+// 代理入口（两种地址格式都接受）：
+// 主格式（detail/play 发出）：/proxy/m3u8?u={b64url}&r={b64url}；
+// 分片格式（改写后的媒体清单分片行）：/proxy/{b64url 目标}/{b64url referer}.ts。
+// 取回的文本是 #EXTM3U 即按清单改写；否则按字节透传：查询串形式来的是密钥
+// （16 字节）回 application/octet-stream，路径段形式来的是分片回 video/mp2t
+// （支持 Range，便于拖动）。
+async function m3u8Proxy(request, reply) {
+  const q = request?.query || {};
+  let uEnc = q.u || '';
+  let rEnc = q.r || '';
+  let viaPath = false;
+  if (!uEnc) {
+    const wild = request?.params && request.params['*'];
+    let segs = [];
+    if (wild) segs = String(wild).split('/').filter(Boolean);
+    else {
+      const rawPath = String((request?.raw && request.raw.url) || request?.url || '').split('?')[0];
+      const pi = rawPath.indexOf('/proxy/');
+      if (pi >= 0) segs = rawPath.slice(pi + 7).split('/').filter(Boolean);
+    }
+    if (segs.length && segs[segs.length - 1].endsWith('.ts')) {
+      segs[segs.length - 1] = segs[segs.length - 1].slice(0, -3);
+    }
+    if (segs.length) { uEnc = segs[0]; rEnc = segs[1] || ''; viaPath = true; }
+  }
+  if (!uEnc) { reply.code(400).send('missing u'); return; }
+  let target = '';
+  let referer = HOST + '/';
+  try {
+    target = unb64url(uEnc);
+    if (rEnc && rEnc !== '-') referer = unb64url(rEnc) || referer;
+  } catch (e) { reply.code(400).send('bad u'); return; }
+  if (!/^https?:\/\//.test(target)) { reply.code(400).send('bad u'); return; }
+  // 改写基址：同 24JAV，用请求 Host 拼完整 http:// 绝对地址；无 Host 时退回
+  // proxyUrl 拼出的 js2p:// 形式（不比旧行为更差）。
+  const host = request.headers && request.headers.host;
+  const selfBase = host
+    ? `http://${host}/spider/${KEY}/3`
+    : (proxyUrl(request, '', '', '').replace(/\?.*$/, '') || `/spider/${KEY}/3`);
+  const buf = await fetchBytes(target, referer);
+  if (!buf || !buf.length) { reply.redirect(target); return; }
+  const head = buf.subarray(0, Math.min(buf.length, 16)).toString('utf8');
+  if (head.trimStart().startsWith('#EXTM3U')) {
+    reply.header('Content-Type', 'application/vnd.apple.mpegurl');
+    reply.header('Cache-Control', 'no-cache');
+    reply.send(rewriteM3u8(buf.toString('utf8'), target, selfBase, referer));
+    return;
+  }
+  // 非清单内容：路径段形式来的是分片；查询串形式来的是密钥（16 字节）。
+  const range = request?.headers && request.headers.range;
+  const m = range ? String(range).match(/bytes=(\d+)-(\d*)/) : null;
+  if (viaPath) {
+    reply.header('Content-Type', 'video/mp2t');
+    reply.header('Cache-Control', 'no-cache');
+    reply.header('Accept-Ranges', 'bytes');
+    if (m) {
+      const start = parseInt(m[1], 10);
+      const end = m[2] ? Math.min(parseInt(m[2], 10), buf.length - 1) : buf.length - 1;
+      if (start < buf.length && start <= end) {
+        reply.code(206);
+        reply.header('Content-Range', `bytes ${start}-${end}/${buf.length}`);
+        reply.send(buf.subarray(start, end + 1));
+        return;
+      }
+    }
+    reply.send(buf);
+    return;
+  }
+  reply.header('Content-Type', 'application/octet-stream');
+  reply.header('Cache-Control', 'no-cache');
+  reply.send(buf);
+}
+
+async function home() {
+  const classes = ZONES.map((z) => ({ type_id: z.id, type_name: z.name }));
+  const filters = {};
+  for (const z of ZONES) {
+    const f = filtersFor(z);
+    if (f.length) filters[z.id] = f;
+  }
+  let list = [];
+  let loadErr = false;
+  try {
+    const html = await getHtml('/');
+    if (!html) loadErr = true;
+    else list = parseCards(html, HOST).slice(0, 20);
+  } catch (e) { list = []; loadErr = true; }
+  const out = { class: classes, filters, list };
+  if (loadErr) out.msg = '加载失败，请下拉刷新重试';
+  return out;
+}
+
+async function category(reqIn) {
+  const body = reqIn?.body || {};
+  const zoneId = String(Array.isArray(body.id) ? body.id[0] : body.id || body.tid || '').replace(/\//g, '');
+  const page = Math.max(1, parseInt(body.page, 10) || 1);
+  const extend = body.filters || body.extend || {};
+  const zone = ZONES.find((x) => x.id === zoneId);
+  let target = String(extend.sub || '').trim();
+  if (!target) target = zone ? zone.default : zoneId;
+  if (!target) target = zoneId;
+  let path = '';
+  if (target === 'route_home_featured') {
+    path = page === 1 ? '/' : ('/page/' + page + '/');
+  } else {
+    path = page === 1 ? ('/category/' + target + '/') : ('/category/' + target + '/' + page + '/');
+  }
+  const html = await getHtml(path);
+  // 取页全失败时带 msg 回空列表（av123 同款先例）：失败不再伪装成“暂无数据”的真空
+  if (!html) return { page, pagecount: page, list: [], msg: '加载失败，请下拉刷新重试' };
+  const list = parseCards(html, HOST);
+  let next = false;
+  if (target === 'route_home_featured') next = html.includes('/page/' + (page + 1) + '/');
+  else next = html.includes('/category/' + target + '/' + (page + 1) + '/');
+  if (!next && list.length > 0) {
+    const nums = [...html.matchAll(/\/category\/[a-z0-9]+\/(\d+)\//gi)].map((x) => parseInt(x[1], 10));
+    if (nums.length && Math.max(...nums) > page) next = true;
+  }
+  return { page, pagecount: next ? page + 1 : page, list };
+}
+
+async function catSearch(reqIn) {
+  const body = reqIn?.body || {};
+  const kw = String(body.wd || '').trim();
+  const page = Math.max(1, parseInt(body.page, 10) || 1);
+  if (!kw) return { list: [] };
+  const path = page === 1 ? ('/search/' + encodeURIComponent(kw) + '/') : ('/search/' + encodeURIComponent(kw) + '/' + page + '/');
+  const html = await getHtml(path);
+  if (!html) return { page, pagecount: page, list: [], msg: '加载失败，请下拉刷新重试' };
+  return { page, list: parseCards(html, HOST) };
+}
+
+async function detail(reqIn) {
+  const body = reqIn?.body || {};
+  const rawId = String(Array.isArray(body.id) ? body.id[0] : body.id || '');
+  if (!rawId) return { list: [] };
+  const durl = rawId.startsWith('http') ? rawId : HOST + rawId;
+   // 字幕预热：与下方取播单并行跑，点播时 play 直接命中缓存/在途
+  const html = await getHtml(rawId);
+  const tM = html.match(/<title>(.*?)<\/title>/i);
+  let mainTitle = '高清视频';
+  if (tM) mainTitle = tM[1].trim().replace(/\s*[-_]\s*蘑菇视频\s*$/i, '').trim() || '高清视频';
+   // 字幕搜索键优先用真片名
+  // 新版详情优先走 __ARCHIVE_PLAYER__；旧解析（article-videos / 播放变量 / 裸 m3u8）留作兜底
+  let playUrl = archivePlayUrl(html);
+  if (!playUrl) {
+    const stream = extractPlayStream(html);
+    if (stream.viaDataUrl) {
+      playUrl = stream.url;
+    } else if (stream.url) {
+      playUrl = stream.url;
+    }
+  }
+  if (!playUrl) {
+    const v = extractPlayerVarUrl(html, 'player_aaaa') || extractPlayerVarUrl(html, 'player_data');
+    if (v) playUrl = v;
+  }
+  if (!playUrl) {
+    const dm = html.match(/id=["']article-videos["'][^>]*data-url=["']([^"']+)["']/i)
+      || html.match(/data-url=["']([^"']+)["'][^>]*id=["']article-videos["']/i);
+    if (dm) {
+      const bases = parseCdnLines(html);
+      const pth = dm[1].trim().replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+      playUrl = pickPlayBase(bases).replace(/\/+$/, '') + (pth.startsWith('/') ? pth : '/' + pth);
+    }
+  }
+  let posterPic = '';
+  const ap0 = extractArchivePlayer(html);
+  if (ap0.posterImg) posterPic = normUrl(ap0.posterImg);
+  const dfdf = String(html || '').match(/dfdf\.tjacq\.com\/image\/[^\s"']+/g);
+  if (dfdf && dfdf.length) posterPic = normUrl('https://' + dfdf[0]);
+  if (!posterPic) {
+    const ogM = html.match(/property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    if (ogM) posterPic = normUrl(ogM[1].trim());
+  }
+  if (!posterPic) {
+    const selfCard = parseCards(html, HOST).find((c) => c.id === rawId);
+    if (selfCard && selfCard.vod_pic) posterPic = selfCard.vod_pic;
+  }
+  // 三条可选线（站方每片只给一条单码率播单，三线是同一播单的三条送达腿，不编造多档）：
+  // Worker——播单走 mogu-hls Worker 改写 + 分片透传（REX 1.0.5 正片线同款，用户真机已证能播）；
+  // 直连——dfdf 播单直出（REX 1.0.5 直连集同款）；本地代理——蜘蛛 /proxy/* 全程字节代理（v2 原样保留作兜底）。
+  const playLines = [];
+  if (playUrl) {
+    playLines.push({ group: 'Worker', name: '正片', url: workerUrl(playUrl) });
+    playLines.push({ group: '直连', name: '正片', url: playUrl });
+    const proxied = proxyUrl(reqIn, '/proxy/m3u8', playUrl, durl);
+    if (proxied) playLines.push({ group: '本地代理', name: '正片', url: proxied });
+  }
+  return {
+    list: [{
+      vod_id: rawId,
+      vod_name: mainTitle,
+      vod_pic: posterPic,
+      vod_remarks: 'HD超清',
+      vod_content: '蘑菇视频',
+      vod_play_from: playLines.length ? playLines.map((l) => l.group).join('$$$') : '蘑菇视频',
+      vod_play_url: playLines.length ? playLines.map((l) => l.name + '$' + durl + '@@' + l.url).join('$$$') : '',
+    }],
+  };
+}
+
+async function play(reqIn) {
+  const body = reqIn?.body || {};
+  let id = String(Array.isArray(body.id) ? body.id[0] : body.id || '');
+  if (id.includes('$')) id = id.split('$').pop();
+  if (!id) return { parse: 0, url: '' };
+  // 新格式：详情页地址@@播单地址（供字幕搜索找回片名）；旧格式（纯播单）照常播、无字幕
+  let durl = '';
+  let target = id;
+  const at = id.indexOf('@@');
+  if (at >= 0) { durl = id.slice(0, at); target = id.slice(at + 2); }
+  if (!target) return { parse: 0, url: '' };
+    // 2026-11-08：播单地址由 detail() 按线路定好（Worker/直连/本地代理），play() 只原样
+  // 返回，不再统一包一层本地代理——旧版把 Worker 地址也包进 /proxy/m3u8，等于 Worker
+  // 白走、仍死在代理取数（req.get 到 dfdf）这一腿。本地代理只走“本地代理”线那一集
+  // （detail 里已包好地址），其余两线直出。旧格式集（正片$<durl>@@<裸播单>，缓存详情）
+  // 同样原样返回，即直连线行为，不比旧行为更差。
+  const result = { parse: 0, url: target, header: { 'User-Agent': UA, 'Referer': HOST + '/' } };
+     // 无字幕命中时不带此键，返回与接入前逐字段一致
+  return result;
+}
+
+// ---------------- 字幕聚合试点 (XPTV 版, 2026-10-23 新芯) ----------------
+// 本试点只加在 avdb: 验证 XPTV 播放器是否渲染 getPlayinfo 返回的
+// subs 字幕位。2026-10-23 按用户反馈换芯 (旧芯多键合并+只排序不
+// 过滤, 片名键召回别片字幕灌满前 10、SubtitleCat 被挤出): 改照
+// 用户自有迅雷看看组件 (xunlei.subtitle) 原法 ——
+//   (a) 搜索键按序逐个查、首个有结果的键即停;
+//   (b) 严过滤: 条目 name/langs/ext 须含番号 (宽松形亦可) 或片
+//       名全文, 不含全扔; 有番号时过滤到空即空 (不回退), 无番
+//       号时回退名单也要过片名词元闸门 (单字模糊召回过不了);
+//   (c) 打分照组件: cid_match 100000、含番号 +25000、oracle 自
+//       带 Score/FingerprintScore、下载量、时长/大小。
+// 槽位 (用户钦定优先级, 同走 oracle 接口):
+//   迅雷 (档位 0): 键序 [番号, 紧凑番号]
+//   迅雷看看 (档位 1): 组件完整键序 [番号, 紧凑番号, 番号+标题,
+//     紧凑番号+标题, 全标题]
+//   SubtitleCat (档位 2): 搜索页 -> 字幕页 -> 按语言直链, 同样
+//     过严过滤。
+// 合并: URL 去重 (重复条目标高档位来源) -> 档位 -> 语言 (简中>
+// 繁中>双语>英文>日文>其他) -> 分数; 全局上限 10、单槽软上限 8
+// (保 SubtitleCat 有位置); 只收 .srt/.vtt/.ass/.ssa 直链, 命中
+// 以 [{name,url,format}] 挂到 getPlayinfo 返回对象。
+// XPTV 适配: HTTP 全走 $fetch.get (两源皆 GET, 不依赖未证实的
+// $fetch.post); 不用 setTimeout, 时长由单请求超时兜底 (oracle
+// 5s / SubtitleCat 搜索 5s + 字幕页 4s, 三槽并行); 不依赖跨调
+// 用全局状态 — 片名由 track.ext 从 getTracks 带入, 搜索在
+// getPlayinfo 内一次完成, 失败全静默; 无命中时返回不带 subs
+// 键, 与未接入前逐字一致。SubHD (下载被站方门控 403) 与射手
+// assrt (源站 522 不可达) 不接入, 与猫版口径一致。
+const SUB_UA = UA;
+
+// subHttp: 与猫版同语义 (状态码不抛错、仅 2xx 给正文), 底层
+// $fetch.get; data 已被运行时解析成对象时回序列化成文本。
+async function subHttp(url, headers, timeoutMs) {
+    try {
+        const r = await $fetch.get(url, { headers: headers || {}, timeout: timeoutMs || 10000 });
+        const data = r ? r.data : null;
+        const body = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+        const status = r && typeof r.status === 'number' ? r.status : (body ? 200 : 0);
+        return { status, body: status >= 200 && status < 300 ? body : '' };
+    } catch (e) {
+        return { status: 0, body: '' };
+    }
+}
+
+// 番号抽取 (移植自迅雷看看 REX 组件 extractSearchCode 的核心档)
+function subExtractCode(text) {
+    const s = String(text || '').toUpperCase().replace(/[._]/g, ' ').replace(/\s+/g, ' ');
+    const pats = [
+        /\bFC2(?:[- ]?PPV)?[- ]?\d{5,8}\b/,
+        /\bCARIB(?:PR)?[- ]?\d{6,8}\b/,
+        /\b1PONDO[- ]?\d{6,8}\b/,
+        /\bHEYZO[- ]?\d{3,6}\b/,
+        /\b[A-Z]{2,10}[- ]\d{2,8}[A-Z]?\b/,
+        /\b[A-Z]{2,10}\d{2,8}[A-Z]?\b/,
+    ];
+    for (const re of pats) {
+        const m = s.match(re);
+        if (m) return m[0].replace(/\s+/g, '-').replace(/-+/g, '-');
+    }
+    return '';
+}
+
+// 语言判定: rank 越小越优先 (简中 > 繁中 > 双语 > 英文 > 日文 > 其他)
+function subLangOf(name, langs) {
+    const s = (String(name || '') + ' ' + String(langs || '')).toLowerCase();
+    if (/简体|简中|chs|zh[-_. ]?cn|zh[-_. ]?hans/.test(s)) return { tag: '简中', rank: 0 };
+    if (/繁体|繁中|cht|zh[-_. ]?tw|zh[-_. ]?hk|zh[-_. ]?hant/.test(s)) return { tag: '繁中', rank: 1 };
+    if (/双语|中英|中日|bilingual/.test(s)) return { tag: '双语', rank: 2 };
+    if (/英文|english|eng|(^|[-_. ])en([-_. ]|$)/.test(s)) return { tag: '英文', rank: 3 };
+    if (/日文|日语|japanese|jpn|(^|[-_. ])ja([-_. ]|$)/.test(s)) return { tag: '日文', rank: 4 };
+    return { tag: '', rank: 5 };
+}
+
+const SUB_TEXT_RE = /\.(srt|vtt|ass|ssa)(\?|#|$)/i;
+const SUB_NOISE_RE = /\b(UNCENSORED|LEAKED|LEAK|OTHER|COMPLETE|FULL|HDR|WEB|BLURAY|BDRIP|WEBDL|REMUX|X264|X265|10BIT|8BIT|HEVC|AVC)\b/gi;
+
+function subStripEp(text) {
+    return String(text || '').trim()
+        .replace(/\b(?:第\s*\d+\s*集|第\s*\d+\s*話|EP\s*\d+|E\s*\d+|S\d{1,2}E\d{1,2}|\d{1,2}x\d{1,2}|Season\s*\d+\s*Episode\s*\d+)\b/gi, ' ')
+        .replace(/\b(?:第\s*\d+\s*季|Season\s*\d+)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function subLoose(s) {
+    return String(s || '').replace(/[-_\s.]/g, '');
+}
+
+function subFirstNumber() {
+    for (let i = 0; i < arguments.length; i++) {
+        const n = Number(arguments[i]);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    return 0;
+}
+
+function subParseDuration(value) {
+    if (value == null) return 0;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const text = String(value || '').trim();
+    if (!text) return 0;
+    if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
+    const hms = text.match(/(?:(\d+):)?(\d{1,2}):(\d{2})/);
+    if (hms) return Number(hms[1] || 0) * 3600 + Number(hms[2] || 0) * 60 + Number(hms[3] || 0);
+    const zh = text.match(/(\d+)\s*小时(?:\s*(\d+)\s*分(?:钟)?)?(?:\s*(\d+)\s*秒)?/);
+    if (zh) return Number(zh[1] || 0) * 3600 + Number(zh[2] || 0) * 60 + Number(zh[3] || 0);
+    return 0;
+}
+
+function subExtOf(name) {
+    if (!name) return '';
+    const s = String(name).toLowerCase();
+    if (s.endsWith('.srt')) return '.srt';
+    if (s.endsWith('.ass')) return '.ass';
+    if (s.endsWith('.ssa')) return '.ssa';
+    if (s.endsWith('.vtt')) return '.vtt';
+    return '';
+}
+
+// 搜索上下文 + 组件法键序 (照 xunlei.subtitle buildSearchKeys,
+// 片名直接取自 track.ext): 有番号时 [番号, 紧凑番号, 番号+标题
+// 余部, 紧凑番号+标题余部, 全标题]; 迅雷槽只取 [番号, 紧凑番号]。
+function subBuildCtx(title) {
+    const rawText = String(title || '').trim();
+    const displayText = subStripEp(rawText);
+    const code = subExtractCode(rawText) || subExtractCode(displayText);
+    const keysAll = [];
+    if (code) {
+        const titlePart = displayText
+            .replace(new RegExp(code.replace(/[-_]/g, '[-_ ]?'), 'i'), '')
+            .replace(SUB_NOISE_RE, '')
+            .replace(/\b(?:EP|E|S|SEASON)\s*\d{1,3}\b/gi, '')
+            .replace(/^[\s\-_:]+|[\s\-_:]+$/g, '')
+            .trim();
+        const compact = code.replace(/[-_ ]/g, '');
+        keysAll.push(code, compact);
+        if (titlePart && titlePart !== code) keysAll.push(code + ' ' + titlePart);
+        if (titlePart && titlePart !== compact) keysAll.push(compact + ' ' + titlePart);
+    }
+    if (displayText) keysAll.push(displayText);
+    return {
+        code,
+        compact: code ? code.replace(/[-_ ]/g, '') : '',
+        displayText,
+        rawText,
+        keysAll: [...new Set(keysAll)].filter((k) => k.length >= 2),
+        xunleiKeys: code ? [code, code.replace(/[-_ ]/g, '')] : (displayText ? [displayText] : []),
+        catKey: code || displayText,
+        matchText: subStripEp(rawText).toLowerCase(),
+        titleLower: rawText.toLowerCase(),
+    };
+}
+
+// 条目文本 (name + langs + ext) 是否与番号/片名相关 (组件严过滤)
+function subRelevant(it, ctx) {
+    const text = (String(it.name || '') + ' ' + String(it.langs || '') + ' ' + String(it.ext || '')).toLowerCase();
+    const textLoose = subLoose(text);
+    if (ctx.code) {
+        const cl = ctx.code.toLowerCase();
+        if (text.indexOf(cl) >= 0 || textLoose.indexOf(subLoose(cl)) >= 0) return true;
+    }
+    const mt = ctx.matchText;
+    const tl = ctx.titleLower;
+    if (mt && text.indexOf(mt) >= 0) return true;
+    if (mt && textLoose.indexOf(subLoose(mt)) >= 0) return true;
+    if (tl && text.indexOf(tl) >= 0) return true;
+    if (tl && textLoose.indexOf(subLoose(tl)) >= 0) return true;
+    if (text && mt && mt.indexOf(text) >= 0) return true;
+    return false;
+}
+
+// 片名有效词元 (相关性闸门用): 拉丁/数字词 >=3 字符、汉字串
+// >=2 字。单字召回 (如生僻字「龘」) 过不了这一关。
+function subTitleTokens(title) {
+    const t = String(title || '').toLowerCase();
+    const toks = [];
+    let m;
+    const re = /[a-z0-9]+/g;
+    while ((m = re.exec(t)) !== null) if (m[0].length >= 3) toks.push(m[0]);
+    const re2 = /[一-鿿]+/g;
+    while ((m = re2.exec(t)) !== null) if (m[0].length >= 2) toks.push(m[0]);
+    return toks;
+}
+
+function subTokenHit(name, tokens) {
+    const n = String(name || '').toLowerCase();
+    for (let i = 0; i < tokens.length; i++) if (n.indexOf(tokens[i]) >= 0) return 1;
+    return 0;
+}
+
+// 严过滤: 有番号时过滤到空即空 (不回退); 无番号时回退名单也
+// 要过词元闸门。
+function subStrictFilter(items, ctx) {
+    const kept = items.filter((it) => subRelevant(it, ctx));
+    if (kept.length) return kept;
+    if (ctx.code) return [];
+    const toks = subTitleTokens(ctx.displayText);
+    return items.filter((it) => subTokenHit(it.name, toks));
+}
+
+// 组件打分 (scoreItem 的电影路径)
+function subScoreOracle(it, ctx) {
+    const text = (String(it.name || '') + ' ' + String(it.langs || '') + ' ' + String(it.ext || '')).toLowerCase();
+    const textLoose = subLoose(text);
+    let score = (it.cid_match ? 100000 : 0) + (Number(it.down_count) || 0) / 10000;
+    if (ctx.code) {
+        const cl = ctx.code.toLowerCase();
+        if (text.indexOf(cl) >= 0 || textLoose.indexOf(subLoose(cl)) >= 0) score += 25000;
+        score += 500;
+    }
+    score += Math.max(0, Number(it.score) || 0);
+    score += Math.max(0, Number(it.fingerprintScore) || 0);
+    if (Number(it.duration) > 0) score += 50;
+    if (Number(it.file_size) > 0) score += Math.min(Number(it.file_size) / 1024 / 1024, 20);
+    if (ctx.titleLower && (text.indexOf(ctx.titleLower) >= 0 || textLoose.indexOf(subLoose(ctx.titleLower)) >= 0)) score += 1000;
+    if (text.indexOf('sub') >= 0 || text.indexOf('subtitle') >= 0 || text.indexOf('字幕') >= 0) score += 300;
+    return score;
+}
+
+// oracle 条目归一 (照组件 normalizeResult 的字段别名口径)
+function subNormOracle(item) {
+    const duration = subFirstNumber(
+        subParseDuration(item && item.Duration), subParseDuration(item && item.duration),
+        subParseDuration(item && item.TimeLength), subParseDuration(item && item.time_length),
+        subParseDuration(item && item.Length), subParseDuration(item && item.length),
+        subParseDuration(item && item.VideoDuration), subParseDuration(item && item.video_duration),
+        subParseDuration(item && item.Dur), subParseDuration(item && item.dur),
+        subParseDuration(item && item.Runtime), subParseDuration(item && item.runtime),
+        subParseDuration(item && item.PlayTime), subParseDuration(item && item.play_time));
+    const fileSize = subFirstNumber(
+        item && item.FileSize, item && item.file_size, item && item.Size, item && item.size,
+        item && item.FileSizeBytes, item && item.fileSize, item && item.filesize,
+        item && item.SubSize, item && item.sub_size, item && item.Subsize, item && item.subsize,
+        item && item.LengthBytes, item && item.length_bytes, item && item.Bytes, item && item.bytes);
+    const name = String((item && (item.Name || item.name || item.Title || item.title || item.FileName || item.filename)) || '迅雷字幕').trim();
+    return {
+        name,
+        langs: String((item && (item.Langs || item.langs || (Array.isArray(item.Languages) ? item.Languages.join(',') : item.Languages) || item.lang || item.language)) || '').trim(),
+        ext: String((item && (item.Ext || item.ext || item.Format || item.format)) || '').trim() || subExtOf(name) || '.srt',
+        url: String((item && (item.Url || item.url)) || '').trim(),
+        down_count: Number((item && (item.DownCount || item.down_count || item.Download || item.download || item.Downloads || item.downloads)) || 0),
+        cid_match: Boolean(item && (item.CidMatch != null ? item.CidMatch : item.cid_match)),
+        duration,
+        file_size: fileSize,
+        score: Number((item && (item.Score || item.score)) || 0),
+        fingerprintScore: Number((item && (item.FingerprintfScore || item.fingerprintfScore || item.FingerprintScore || item.fingerprintScore)) || 0),
+    };
+}
+
+// oracle 单键查询: 归一后的条目数组 (仅文本字幕直链); 失败 []
+async function subOracleQuery(key) {
+    const r = await subHttp('https://api-shoulei-ssl.xunlei.com/oracle/subtitle?name=' + encodeURIComponent(key),
+        { 'User-Agent': 'ForwardWidgets/1.0.2', Accept: '*/*' }, 5000);
+    if (r.status !== 200 || !r.body) return [];
+    let j;
+    try { j = JSON.parse(r.body); } catch (e) { return []; }
+    if (!j || Number(j.code) !== 0 || !Array.isArray(j.data)) return [];
+    const out = [];
+    for (const raw of j.data) {
+        const it = subNormOracle(raw);
+        if (!it.url || !SUB_TEXT_RE.test(it.url)) continue;
+        out.push(it);
+    }
+    return out;
+}
+
+// oracle 槽: 键序逐个查、首个有结果的键即停 (组件原法); 命中
+// 名单过严过滤 + 打分后入 bag。
+async function subOracleSlot(src, tier, keys, ctx, bag) {
+    for (const key of keys) {
+        const items = await subOracleQuery(key);
+        if (!items.length) continue;
+        const kept = subStrictFilter(items, ctx);
+        for (const it of kept) {
+            const lang = subLangOf(it.name, it.langs);
+            const dispName = /^[0-9a-f]{24,}$/i.test(it.name.trim()) ? (ctx.code ? ctx.code + ' 迅雷字幕' : '迅雷字幕') : it.name;
+            bag.push({
+                src, tier, name: dispName, url: it.url, lang: lang.tag, langRank: lang.rank,
+                score: subScoreOracle(it, ctx), dl: it.down_count,
+            });
+        }
+        break;
+    }
+}
+
+// SubtitleCat 槽: 搜索页 -> 字幕页 (前 3) -> 按语言分的直链;
+// 文件名同样过严过滤 (有番号时不回退)。
+async function subFromSubtitleCat(ctx, bag) {
+    const key = ctx.catKey;
+    if (!key) return;
+    const r = await subHttp('https://subtitlecat.com/index.php?search=' + encodeURIComponent(key),
+        { 'User-Agent': SUB_UA, Referer: 'https://subtitlecat.com/' }, 5000);
+    if (r.status !== 200 || !r.body) return;
+    const pages = [];
+    const seen = new Set();
+    for (const m of r.body.matchAll(/href="(subs\/\d+\/[^"]+\.html)"/g)) {
+        if (seen.has(m[1])) continue;
+        seen.add(m[1]);
+        pages.push(m[1]);
+        if (pages.length >= 3) break;
+    }
+    await Promise.all(pages.map(async (p) => {
+        const pr = await subHttp('https://subtitlecat.com/' + p, { 'User-Agent': SUB_UA, Referer: 'https://subtitlecat.com/' }, 4000);
+        if (pr.status !== 200 || !pr.body) return;
+        const rawItems = [];
+        for (const m of pr.body.matchAll(/href="(\/subs\/\d+\/[^"]+\.(?:srt|vtt|ass))"/gi)) {
+            let nm = m[1].split('/').pop() || '字幕';
+            try { nm = decodeURIComponent(nm); } catch (e) { /* 保持原样 */ }
+            rawItems.push({ name: nm, langs: '', ext: subExtOf(nm), url: 'https://subtitlecat.com' + m[1] });
+        }
+        const kept = rawItems.filter((it) => subRelevant(it, ctx));
+        for (const it of kept) {
+            const lang = subLangOf(it.name, '');
+            let sc = 0;
+            if (ctx.code) {
+                const nl = it.name.toLowerCase();
+                if (nl.indexOf(ctx.code.toLowerCase()) >= 0 || subLoose(nl).indexOf(subLoose(ctx.code.toLowerCase())) >= 0) sc += 25000;
+            }
+            if (it.name.toLowerCase().indexOf('sub') >= 0) sc += 300;
+            bag.push({
+                src: 'SubtitleCat', tier: 2, name: it.name, url: it.url,
+                lang: lang.tag, langRank: lang.rank, score: sc, dl: 0,
+            });
+        }
+    }));
+}
+
+// 合并: URL 去重 (同 URL 保留高档位来源) + (语言|去扩展名文件
+// 名) 去重; 排序 档位 -> 语言 -> 分数; 单槽软上限 8、全局上
+// 限 10。
+function subMerge(items) {
+    const sorted = items.slice().sort((a, b) =>
+        (a.tier - b.tier) || (a.langRank - b.langRank) || (b.score - a.score) || String(a.name).localeCompare(String(b.name)));
+    const seenUrl = new Set();
+    const seenName = new Set();
+    const tierCount = {};
+    const out = [];
+    for (const it of sorted) {
+        if (seenUrl.has(it.url)) continue;
+        const nameKey = it.lang + '|' + it.name.toLowerCase().replace(/\.(srt|vtt|ass|ssa)$/i, '');
+        if (seenName.has(nameKey)) continue;
+        if ((tierCount[it.tier] || 0) >= 8) continue;
+        seenUrl.add(it.url);
+        seenName.add(nameKey);
+        tierCount[it.tier] = (tierCount[it.tier] || 0) + 1;
+        const ext = (it.url.match(SUB_TEXT_RE) || [])[1].toLowerCase();
+        const cleanName = it.name.replace(/\.(srt|vtt|ass|ssa)$/i, '').slice(0, 60);
+        out.push({ name: it.src + '·' + (it.lang ? it.lang + '·' : '') + cleanName, url: it.url, format: ext });
+        if (out.length >= 10) break;
+    }
+    return out;
+}
+
+// 一次搜索: 三槽并行, 各自失败静默; 无键/无命中返回 []。
+async function subSearch(title) {
+    const ctx = subBuildCtx(title);
+    if (!ctx.keysAll.length && !ctx.catKey) return [];
+    const bag = [];
+    await Promise.all([
+        Promise.resolve(subOracleSlot('迅雷', 0, ctx.xunleiKeys, ctx, bag)).catch(() => {}),
+        Promise.resolve(subOracleSlot('迅雷看看', 1, ctx.keysAll, ctx, bag)).catch(() => {}),
+        Promise.resolve(subFromSubtitleCat(ctx, bag)).catch(() => {}),
+    ]);
+    return subMerge(bag);
+}
+
+
+// ---------------- XPTV 适配层（薄适配：复用上方猫源 home/category/detail/play/search） ----------------
+function __s(v) { return String(v == null ? '' : v).trim(); }
+
+async function getConfig() {
+    const tabs = (ZONES.map(z => ({ id: z.id, name: z.name }))).map((c) => ({ name: c.name, ext: { id: c.id } }));
+    return jsonify({ ver: 1, title: '蘑菇视频', site: HOST, tabs });
+}
+
+async function getCards(ext) {
+    ext = argsify(ext);
+    const id = __s(ext.id || '');
+    const page = Math.max(1, parseInt(ext.page, 10) || 1);
+    let res;
+    try { res = await category({ body: { id, page } }); } catch (e) { res = null; }
+    const list = (res && Array.isArray(res.list) ? res.list : []).map((v) => ({
+        vod_id: v.vod_id, vod_name: v.vod_name, vod_pic: v.vod_pic, vod_remarks: v.vod_remarks,
+        ext: { id: v.vod_id, name: v.vod_name },
+    }));
+    return jsonify({ list });
+}
+
+async function getTracks(ext) {
+    ext = argsify(ext);
+    const id = __s(ext.id || '');
+    const tracks = [];
+    let d = null;
+    try { d = await detail({ body: { id } }); } catch (e) { d = null; }
+    const playUrl = __s(d && d.vod_play_url);
+    if (playUrl) {
+    const from = __s(d.vod_play_from || '');
+    const groups = from ? from.split('$$$') : [];
+    const segs = playUrl.split('$$$');
+    segs.forEach((seg, gi) => {
+        const eps = String(seg || '').split('#').filter(Boolean);
+        const gname = groups[gi] ? String(groups[gi]).trim() : '';
+        for (const ep of eps) {
+            const di = ep.indexOf('$');
+            const nm = di > 0 ? ep.slice(0, di) : '正片';
+            const tname = gname ? (eps.length > 1 ? gname + '-' + nm : gname) : nm;
+            tracks.push({ name: tname, pan: '', ext: { url: '', id: ep, name: nm } });
+        }
+    });
+    }
+    return jsonify({ list: [{ title: '在线播放', tracks }] });
+}
+
+async function getPlayinfo(ext) {
+    ext = argsify(ext);
+    const id = __s(ext.id || '');
+    const name = __s(ext.name || '');
+    if (!id) return jsonify({ urls: [], headers: [] });
+    let r = null;
+    try { r = await play({ body: { id } }); } catch (e) { r = null; }
+    const url = __s(r && r.url);
+    if (!url) return jsonify({ urls: [], headers: [] });
+    const result = { urls: [url], headers: [r.header || {}] };
+    if (name) {
+        try {
+            const subs = await subSearch(name);
+            if (subs && subs.length) result.subs = subs;
+        } catch (e) { /* 无字幕不影响播放 */ }
+    }
+    return jsonify(result);
+}
+
+async function search(ext) {
+    ext = argsify(ext);
+    const wd = __s(ext.text);
+    const page = Math.max(1, parseInt(ext.page, 10) || 1);
+    if (!wd) return jsonify({ list: [] });
+    let res = null;
+    try { res = await catSearch({ body: { wd, page } }); } catch (e) { res = null; }
+    const list = (res && Array.isArray(res.list) ? res.list : []).map((v) => ({
+        vod_id: v.vod_id, vod_name: v.vod_name, vod_pic: v.vod_pic, vod_remarks: v.vod_remarks,
+        ext: { id: v.vod_id, name: v.vod_name },
+    }));
+    return jsonify({ list });
+}

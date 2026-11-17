@@ -1,0 +1,1109 @@
+// 丝瓜视频 - XPTV csp 格式
+// 转换自 mira-cat nodejs/src/spider/video/py_siguaspw.js
+// 丝瓜视频 https://siguaspw.cc —— 与桃花视频同 CMS（/video/<19位数字>/ + data-url 播单 + cdn_lines）
+// 分类：首页实测 228 个 /category/cateNN/（创作者/题材/厂牌/更多四组作分区 + 筛选卡片，分区按分类名语义归纳，cate ID 与名均取自首页）
+// 2026-11-04 新增 8 个顶级分类（题材标签区已证实 cate，名与 ID 均取自首页实测；现有 5 类与 filters 结构不动）
+// 列表翻页：/category/<cate>/<页码>/；详情 data-url 拼 cdn_lines 首条（站方默认，2026-11-07 实测 sxtmo 线播单/key/分片全链 200；旧首选 d1uy7itup9paqh 已不在 cdn_lines 里，d22 cloudfront 线分片 host 连不上）
+// 播放：单码率媒体播单（AES-128），不设假多档；字幕按条目接（仅标题含番号的条目才接芯，多数中文标题无番号则不接）
+// 2026-11-08 全分类核查（用户 15:23 点名）：228 分类 p1/p2/p3 逐页核对——翻页零重叠、单页/双页分类与站方下一页链接一致，
+//   唯独“首页推荐”翻页断（见 category()）；432 部抽查：351 部正片播单全为标准 VOD（ENDLIST 齐全、Range 206），
+//   81 部是站方 _preview 播单（1 分片、约 10 秒，无正片可换，见 detail()）；27 部详情无播单（站方 500 / 直播占位页，标“已失效”）。
+//   “无码破解”抽查 4 部全为正片 VOD（580/540 分片、ENDLIST、首分片 PTS 1.42s，与正常分类无差别），VM 侧无病因可修。
+// 2026-11-07 取页改走自家 site-fetch Worker 腿优先（用户手机网络到 siguaspw.cc 的 TLS 直接失败，
+//   Safari 打不开、蜘蛛直连拿不到内容；Worker v4 白名单已加 siguaspw.cc，用户已部署）。
+//   Worker 失败再回落直连；取页 Worker 只回文本。
+// 2026-11-08 14:08 用户真机：列表/分类/内容/封面全能加载，就是无法播放；
+//   同期 REX 丝瓜 1.0.5 正常（走 siguaspw-hls Worker）。
+//   2026-11-08 VM 复测同一片 /video/2044751266562465792/：站方没变——data-url、
+//   cdn_lines、播单 36432B/319 分片、KEY 16B（73646a336e78757577336b6f756b7673）、
+//   首分片 3,325,168B、Range 206，与 11-07 实测逐字节一致；分片宿主仍是
+//   d3s00p19cjdhyv.cloudfront.net；代码没变（main blob 仍是 5be1a5e6，线上
+//   dist 包内也是这版代理代码）。故断点不在站方、不在代码版本，而在 App 内
+//   本地代理这一腿：播单/分片须经 App 的 req 栈逐片拉取（VM 里 axios 到站方
+//   直接 ECONNRESET、只能用 fetch 垫片，App 内 req 行为与 VM 不同，无法复现），
+//   而 Worker 腿是 Cloudflare 服务端 fetch，实测播单 1.5-2.9s、分片 1.3-1.5s，
+//   比直连（播单 3.0-6.1s、分片 4.4-5.0s）更快，且 REX 侧已在用户手机上证实能播。
+//   修法（与 REX 1.0.5 / 猫源 javcc 同款）：detail/play 一律走 siguaspw-hls
+//   Worker（/m3u8 播单改写 + /seg 分片透传 + KEY 经 /m3u8 原样回传，AES 密文
+//   不改字节，支持 Range）；本地字节代理只留作 Worker 不通时的兜底（detail 取
+//   页时并发探活 Worker 根路径，探活失败才出 js2p 代理线；旧缓存的 js2p 代理
+//   地址与 CDN 直链仍由 play() 接住），不再两套并存互相打架。
+//   线路：cdn_lines 有三条——dfdf（播放线路01）、sxtmo（播放线路05）、d22
+//   备用线路01；d22 分片宿主 d2ln4qgmi83wfi.cloudfront.net 直连与经 Worker
+//   均拉不到分片（2026-11-08 实测 fetch failed），故只出 dfdf/sxtmo 两条可播线
+//   （有其他可播线时跳过 d22；若只剩 d22 则仍出它，不留空详情）。
+// 2026-11-07 21:33 用户真机：列表/分类/内容/封面都出，就是无法播放。VM 实测播放链全通——
+//   播单 200（319 分片）、KEY 200（16B）、首分片 200（3,325,168B，Range 206）；分片是 AES-128
+//   密文（播单 KEY+IV 解密后为纯 TS，17686/17687 同步命中），字节本身无问题；dfdf 与 sxtmo
+//   两线播单的分片 host 同为 d3s00p19cjdhyv.cloudfront.net，该域从未在手机上验证过，
+//   同族 cloudfront 域 d1uy7 已死、d2ln4qgmi83wfi VM 侧连不上，故断点在手机到分片域这一腿。
+//   修法（仿 24JAV/蘑菇 v2 本地字节代理）：detail/play 一律给本地 /proxy/m3u8?u=&r= 地址，
+//   代理实时拉清单改写（KEY URI 与分片行全部指回代理），分片字节原样透传（AES 密文绝不改动、
+//   不剥头），支持 Range；取不到时 302 回源。手机只与 App 自家服务通信，不再直触 cloudfront 域。
+const HOST = 'https://siguaspw.cc';
+const KEY = 'py_siguaspw';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+const WORKER = 'https://siguaspw-hls.li768435813.workers.dev';
+// 2026-11-10：封面走 sigua-img-proxy Worker 代取（封面直链 dfdf.tjacq.com 在
+// 用户手机上加载不出：站方回 Content-Type: text/base64.jpg 且 URL 无扩展名，
+// 播放器图片加载器不认；Worker 代取后以 image/jpeg + .jpg 后缀返回）。
+const IMG_PROXY = 'https://sigua-img-proxy.li768435813.workers.dev';
+// d22 备用线分片宿主已死（2026-11-08 直连与经 Worker 均拉不到分片）；有其他可播线时跳过它。
+const DEAD_LINE_HOSTS = ['d22m1nnedmviq9.cloudfront.net'];
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+const ZONES = {"creator": [{"v": "cate4", "n": "精选Vlog"}, {"v": "cate5", "n": "SweetieYico-亦可姐姐"}, {"v": "cate6", "n": "Silky Suki 丝琪"}, {"v": "cate7", "n": "桃桃学姐（樱空桃桃）"}, {"v": "cate8", "n": "萌崽儿"}, {"v": "cate9", "n": "小水水"}, {"v": "cate10", "n": "Nicolove 妮可"}, {"v": "cate11", "n": "桥本香菜"}, {"v": "cate12", "n": "狐不妖"}, {"v": "cate13", "n": "辛尤里"}, {"v": "cate14", "n": "小欣奈"}, {"v": "cate15", "n": "饼干姐姐"}, {"v": "cate16", "n": "Nana_taipei"}, {"v": "cate17", "n": "玩偶姐姐"}, {"v": "cate18", "n": "苏小涵"}, {"v": "cate19", "n": "情深叉喔"}, {"v": "cate20", "n": "多亿"}, {"v": "cate21", "n": "御梦子"}, {"v": "cate22", "n": "退役御姐-林夕"}, {"v": "cate23", "n": "91兔兔"}, {"v": "cate24", "n": "Naomiii hub"}, {"v": "cate25", "n": "yuukoo"}, {"v": "cate26", "n": "Elle Lee"}, {"v": "cate27", "n": "Make性专家"}, {"v": "cate28", "n": "Yui"}, {"v": "cate29", "n": "小母狗优咪"}, {"v": "cate30", "n": "love姐"}, {"v": "cate31", "n": "苏畅"}, {"v": "cate32", "n": "小敏儿"}, {"v": "cate33", "n": "锅锅酱"}, {"v": "cate34", "n": "丝丝女神"}, {"v": "cate35", "n": "cola酱 唐可可"}, {"v": "cate36", "n": "鸡蛋饼"}, {"v": "cate37", "n": "黑椒盖饭"}, {"v": "cate38", "n": "泰国网黄obokozu"}, {"v": "cate39", "n": "Bigfan13yo"}, {"v": "cate40", "n": "Miss A"}, {"v": "cate41", "n": "日系少女地雷"}, {"v": "cate42", "n": "网红留学生-刘玥"}, {"v": "cate43", "n": "日本网黄-Yua"}, {"v": "cate44", "n": "谭晓彤"}, {"v": "cate45", "n": "长腿御姐Apple"}, {"v": "cate46", "n": "下面有根棒棒糖"}, {"v": "cate47", "n": "斯文禽兽"}, {"v": "cate48", "n": "小二先生"}, {"v": "cate49", "n": "唐伯虎"}, {"v": "cate50", "n": "小桃酱"}, {"v": "cate51", "n": "鸡教练"}, {"v": "cate52", "n": "粉色情人"}, {"v": "cate53", "n": "冉冉学姐"}, {"v": "cate54", "n": "二代CC"}, {"v": "cate55", "n": "捅主任"}, {"v": "cate56", "n": "台湾粉红兔"}, {"v": "cate57", "n": "涵菱"}, {"v": "cate58", "n": "荔枝"}, {"v": "cate59", "n": "京圈嫩模瑶瑶"}, {"v": "cate61", "n": "umate博主秀-原创中心"}, {"v": "cate62", "n": "爆款推荐-热播排行榜"}, {"v": "cate63", "n": "台妹-汐梦瑶"}, {"v": "cate64", "n": "懒懒猪儿-喜欢被抱、被操到哭"}, {"v": "cate65", "n": "诺诺-想成为你的专属宝贝!"}, {"v": "cate66", "n": "小巧芋艿taro"}, {"v": "cate67", "n": "阿朱"}, {"v": "cate68", "n": "糖心淑怡"}, {"v": "cate69", "n": "Couple love-原创"}, {"v": "cate70", "n": "羞羞兔"}, {"v": "cate71", "n": "草莓味的软糖呀"}, {"v": "cate72", "n": "台湾第一女优-吴梦梦"}, {"v": "cate73", "n": "小辣椒"}, {"v": "cate74", "n": "yuna"}, {"v": "cate75", "n": "鹤酱-鹤7"}, {"v": "cate76", "n": "Chloe"}, {"v": "cate77", "n": "爱丝袜的Vivian姐"}, {"v": "cate78", "n": "淫妻交换-绿帽老公"}, {"v": "cate79", "n": "艾希老师"}, {"v": "cate80", "n": "许木学长"}, {"v": "cate81", "n": "司雨"}, {"v": "cate82", "n": "蛇信子兔牙"}, {"v": "cate83", "n": "小阿俏"}, {"v": "cate84", "n": "橘子猫"}, {"v": "cate85", "n": "小余baby"}, {"v": "cate86", "n": "米胡桃"}, {"v": "cate87", "n": "国产D先生"}, {"v": "cate88", "n": "猫宝宝"}, {"v": "cate89", "n": "奶茶妹妹"}, {"v": "cate90", "n": "香菜公主"}, {"v": "cate91", "n": "甜心宝贝"}, {"v": "cate92", "n": "水冰月"}, {"v": "cate93", "n": "柚子猫"}, {"v": "cate94", "n": "小苏拉"}, {"v": "cate95", "n": "麻酥酥呦"}, {"v": "cate96", "n": "又又酱"}, {"v": "cate97", "n": "耀灵"}, {"v": "cate98", "n": "九尾狐狸又名-香草少女"}, {"v": "cate99", "n": "小巨"}, {"v": "cate100", "n": "小鸟酱"}, {"v": "cate101", "n": "八月未央"}, {"v": "cate102", "n": "来自喵星的岁酱"}, {"v": "cate103", "n": "果如cc"}, {"v": "cate105", "n": "海量片源-国产天花板-外网女菩萨"}, {"v": "cate106", "n": "反差婊-母狗界天花板"}, {"v": "cate107", "n": "精选萝莉，少女天花板"}, {"v": "cate108", "n": "私人定制-私拍流出"}, {"v": "cate109", "n": "原创短剧-剧情演绎"}, {"v": "cate110", "n": "安安老师-纯欲学姐"}, {"v": "cate111", "n": "米娜学姐"}, {"v": "cate112", "n": "酥酥"}, {"v": "cate113", "n": "91大神"}, {"v": "cate114", "n": "小晗wink"}, {"v": "cate115", "n": "骚御"}, {"v": "cate116", "n": "铃木君"}, {"v": "cate117", "n": "小恩"}, {"v": "cate118", "n": "芋圆"}, {"v": "cate119", "n": "樱狸子"}, {"v": "cate120", "n": "小爱神"}, {"v": "cate121", "n": "仙仙桃"}, {"v": "cate122", "n": "桃谷谷"}, {"v": "cate123", "n": "小晚酱"}, {"v": "cate124", "n": "骚萝baby"}, {"v": "cate125", "n": "软妹"}, {"v": "cate126", "n": "妮酱"}, {"v": "cate127", "n": "萌白酱"}, {"v": "cate128", "n": "可爱兔"}, {"v": "cate129", "n": "花菜"}, {"v": "cate130", "n": "白桃少女"}, {"v": "cate131", "n": "FC2"}, {"v": "cate132", "n": "小奶瓶"}, {"v": "cate134", "n": "嫩妹肏穴-粉嫩鲍鱼举着嫩妹操到射"}, {"v": "cate135", "n": "人妻-别人的老婆是最好的"}, {"v": "cate136", "n": "乱伦实录-伦理的流失 禁忌的快感"}, {"v": "cate137", "n": "网红集结地"}, {"v": "cate138", "n": "下海萝莉-生活不易萝莉卖艺"}, {"v": "cate139", "n": "台湾之光：跨界演出的女优们"}, {"v": "cate140", "n": "色播名场面"}, {"v": "cate141", "n": "探花档案-约炮大神实录"}, {"v": "cate142", "n": "情迷SM-意乱情迷SM调教"}, {"v": "cate143", "n": "吃瓜一线-网红明星的秘史"}, {"v": "cate144", "n": "下海主播-黄播的美女主播"}, {"v": "cate145", "n": "Cos女神堂-cosplay爱好聚集地"}, {"v": "cate146", "n": "台湾色情平台-SWag"}, {"v": "cate147", "n": "台湾嫩模-JVID"}], "tag": [{"v": "cate149", "n": "精选"}, {"v": "cate150", "n": "孕妇奶汁"}, {"v": "cate151", "n": "探花"}, {"v": "cate152", "n": "网红吃瓜"}, {"v": "cate153", "n": "出轨偷情"}, {"v": "cate154", "n": "自慰喷水"}, {"v": "cate155", "n": "成人综艺"}, {"v": "cate156", "n": "真爱男同"}, {"v": "cate157", "n": "明星换脸"}, {"v": "cate158", "n": "女女同性"}, {"v": "cate159", "n": "网红流出"}, {"v": "cate160", "n": "SM调教"}, {"v": "cate161", "n": "绿帽老公"}, {"v": "cate162", "n": "换妻淫趴"}, {"v": "cate163", "n": "户外露出"}, {"v": "cate164", "n": "大奶美乳"}, {"v": "cate165", "n": "媚黑母狗"}, {"v": "cate166", "n": "制服诱惑"}, {"v": "cate167", "n": "校园女神"}, {"v": "cate168", "n": "按摩会所"}, {"v": "cate169", "n": "直播"}, {"v": "cate170", "n": "勾引搭讪"}, {"v": "cate171", "n": "ASMR"}, {"v": "cate172", "n": "反差婊"}, {"v": "cate174", "n": "母子乱伦"}, {"v": "cate175", "n": "淫乱师生"}, {"v": "cate176", "n": "舅甥外侄"}, {"v": "cate177", "n": "女婿通奸"}, {"v": "cate178", "n": "公公儿媳"}, {"v": "cate179", "n": "淫乱兄妹"}, {"v": "cate180", "n": "家庭乱伦"}, {"v": "cate181", "n": "淫乱姐弟"}], "media": [{"v": "cate183", "n": "麻豆传媒"}, {"v": "cate184", "n": "爱豆传媒"}, {"v": "cate185", "n": "91制片厂"}, {"v": "cate186", "n": "皇家华人"}, {"v": "cate187", "n": "SA国际传媒"}, {"v": "cate188", "n": "蜜桃传媒"}, {"v": "cate189", "n": "天美传媒"}, {"v": "cate190", "n": "兔子先生"}, {"v": "cate191", "n": "果冻传媒"}, {"v": "cate192", "n": "乌托邦"}, {"v": "cate193", "n": "性视界"}, {"v": "cate194", "n": "星空传媒"}, {"v": "cate195", "n": "精东传媒"}, {"v": "cate196", "n": "香蕉视频"}], "more": [{"v": "cate198", "n": "全部"}, {"v": "cate199", "n": "家庭乱伦"}, {"v": "cate200", "n": "中文字幕"}, {"v": "cate201", "n": "波多野结衣"}, {"v": "cate202", "n": "河北彩花"}, {"v": "cate203", "n": "橘玛丽"}, {"v": "cate204", "n": "森泽佳奈"}, {"v": "cate205", "n": "无码破解"}, {"v": "cate206", "n": "JULIA"}, {"v": "cate207", "n": "希崎洁西卡"}, {"v": "cate208", "n": "七森莉莉"}, {"v": "cate209", "n": "三上悠亚"}, {"v": "cate210", "n": "桥本有菜"}, {"v": "cate211", "n": "松下纱荣子"}, {"v": "cate212", "n": "水果派解说"}, {"v": "cate214", "n": "全部"}, {"v": "cate215", "n": "Blacked RAW 黑人巨屌干超模"}, {"v": "cate216", "n": "DEEPER 激情性爱高清视频"}, {"v": "cate217", "n": "MILFY 独家4K 熟女超模 高清影片"}, {"v": "cate218", "n": "SLAYED 超模女同色情影片"}, {"v": "cate219", "n": "tushy 独家超模 高清肛交影片"}, {"v": "cate220", "n": "VIXEN 淫乱超模 群交 4K高清"}, {"v": "cate221", "n": "捷克搭讪 金钱的力量"}, {"v": "cate222", "n": "福利姬"}, {"v": "cate223", "n": "经典三级"}, {"v": "cate226", "n": "摄像破解"}, {"v": "cate227", "n": "裙底偷拍"}, {"v": "cate228", "n": "精品厕拍"}, {"v": "cate229", "n": "痴汉偷拍"}, {"v": "cate230", "n": "群交乱斗"}, {"v": "cate231", "n": "澡堂浴池"}, {"v": "cate232", "n": "街射涂鸦"}, {"v": "cate233", "n": "医院偷拍"}, {"v": "cate234", "n": "捷克幻想"}, {"v": "cate235", "n": "国产扫街"}, {"v": "cate237", "n": "1G老湿"}, {"v": "cate238", "n": "思春社"}, {"v": "cate239", "n": "王竹子"}, {"v": "cate240", "n": "独行者"}, {"v": "cate241", "n": "小哥哥艾理"}, {"v": "cate242", "n": "其它"}]};
+
+function unescapeHtml(s) {
+  return String(s || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (m, n) => String.fromCharCode(parseInt(n, 10)));
+}
+
+function cleanLabel(s) {
+  return unescapeHtml(String(s || '').replace(/<[^>]+>/g, ''))
+    .replace(/[\r\n\t]+/g, ' ').replace(/[$#]/g, '').trim();
+}
+
+function clean(s) {
+  return unescapeHtml(String(s || '').replace(/<[^>]+>/g, ''))
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function absUrl(u, host) {
+  u = String(u || '').trim();
+  if (!u) return '';
+  if (u.startsWith('//')) return 'https:' + u;
+  if (u.startsWith('/')) return host + u;
+  return u;
+}
+
+function proxyCover(u) {
+  const s = String(u || '').trim();
+  if (!s || !/^https?:\/\//i.test(s)) return s;
+  return IMG_PROXY + '/cover.jpg?u=' + encodeURIComponent(s);
+}
+
+function normUrl(u) {
+  let s = String(u || '').trim();
+  if (!s) return '';
+  s = s.replace(/^(https?:)\/([^/])/, '$1//$2');
+  return s;
+}
+
+// Worker 腿回的必须是真实 HTML（够长、非验证墙）；短体/验证页都算失败，走下一腿
+function looksRealHtml(t) {
+  return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
+// 取页：自家 site-fetch Worker 腿优先（12s）→ 直连回落（20s）；两腿都空才返回空。
+// 播放用的播单/分片不经过这里（play 直接给 CDN 直链），Worker 只回文本。
+async function getHtml(path) {
+  let url = String(path || '');
+  if (url.startsWith('//')) url = 'https:' + url;
+  else if (url.startsWith('/')) url = HOST + url;
+  try {
+    const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), {
+      headers: { 'User-Agent': UA, 'Referer': HOST + '/', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },
+      timeout: 12000,
+    });
+    if (r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+  } catch (e) { /* 回落直连 */ }
+  try {
+    const r = await $fetch.get(url, {
+      headers: { 'User-Agent': UA, 'Referer': HOST + '/', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },
+      timeout: 20000,
+    });
+    if (r.status && r.status !== 200) return '';
+    return typeof r.data === 'string' ? r.data : '';
+  } catch (e) { return ''; }
+}
+
+
+// 本 CMS 卡片是“图链 + 文链”两个 <a> 共用同一 /video/<id>/，按 URL 合并图与标题
+function extractPic(inner) {
+  for (const attr of ['data-original', 'data-src', 'src']) {
+    const m = inner.match(new RegExp(attr + "=['\"]([^'\"]+)['\"]", 'i'));
+    if (m) {
+      const cand = m[1].trim();
+      if (cand && !['loading.jpg', 'loading.png', 'placeholder', 'default'].some((b) => cand.toLowerCase().includes(b))) return cand;
+    }
+  }
+  return '';
+}
+
+function parseCards(html, host) {
+  const byUrl = new Map();
+  const re = /<a[^>]+href=["'](\/video\/\d+\/?)["'][^>]*>([\s\S]*?)<\/a>/g;
+  let m;
+  while ((m = re.exec(String(html || ''))) !== null) {
+    const vUrl = m[1].trim();
+    const inner = m[2];
+    let it = byUrl.get(vUrl);
+    if (!it) { it = { vod_id: vUrl, vod_name: '', vod_pic: '', vod_remarks: '' }; byUrl.set(vUrl, it); }
+    const pic = extractPic(inner);
+    if (pic && !it.vod_pic) it.vod_pic = proxyCover(normUrl(pic.startsWith('http') ? pic : absUrl(pic, host)));
+    const txt = cleanLabel(inner);
+    if (txt && txt.length > 2 && !it.vod_name) it.vod_name = txt;
+    const durM = inner.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+    if (durM && !it.vod_remarks) it.vod_remarks = durM[1];
+  }
+  const out = [];
+  for (const it of byUrl.values()) {
+    if (it.vod_pic || it.vod_name) {
+      if (!it.vod_name) it.vod_name = '精彩视频';
+      out.push(it);
+    }
+  }
+  return out;
+}
+
+function parseCdnLines(html) {
+  const bases = [];
+  const m = String(html || '').match(/cdn_lines\s*=\s*'([^']+)'/);
+  if (m) {
+    try {
+      const arr = JSON.parse(m[1].replace(/\\\//g, '/'));
+      for (const it of arr || []) {
+        const b = String((it && it.cdnLine) || '').replace(/\/+$/, '').replace(/^(https?:)\/([^\/])/, '$1//$2');
+        if (b.startsWith('http') && !bases.includes(b)) bases.push(b);
+      }
+    } catch (e) { /* ignore */ }
+  }
+  return bases;
+}
+
+// 2026-11-07：站方 cdn_lines 已轮换，d1uy7itup9paqh.cloudfront.net 不再出现；
+// 实测：首条 sxtmo 线全链通（播单/key/分片均 200），d22 cloudfront 线播单 200 但其分片 host
+// d2ln4qgmi83wfi.cloudfront.net 连不上（VM 侧 fetch+curl 共 0/5，空回复/连接重置），故首选站方
+// 默认首条（站方 JS 同款默认 cdn_lines[0]），不再优先 cloudfront。
+function pickPlayBase(bases) {
+  const list = Array.isArray(bases) ? bases : [];
+  return list[0] || '';
+}
+
+function extractDataUrl(html) {
+  const m = String(html || '').match(/data-url=["']([^"']+)["']/i);
+  if (!m) return '';
+  return m[1].trim().replace(/\\u002F/g, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+}
+
+// ---------------- 播放主路：siguaspw-hls Worker（2026-11-08，与 REX 1.0.5 同款） ----------------
+// Worker 路由（见 worker_siguaspw_hls.js）：/m3u8?u=<b64url 播单>&r=<b64url referer>
+// 播单改写（KEY URI 与分片行全部指回 Worker），/seg/<b64>/<b64>.ts 分片原样透传
+// （AES 密文不改字节、不剥头，支持 Range），KEY 经 /m3u8 原样回传 16B。
+// 2026-11-08 实测：根回 'siguaspw-hls ok'；dfdf/sxtmo 两线 /m3u8 均 200、319 分片、
+// KEY 200（与源 KEY 字节一致）、首分片 200（3,325,168B，video/mp2t）、Range 206。
+function workerUrl(playUrl) {
+  return WORKER + '/m3u8?u=' + b64url(playUrl) + '&r=' + b64url(HOST + '/');
+}
+
+// 探活 Worker 根路径（5s）：detail() 取页时并发跑，不占串行耗时；失败即 false。
+async function workerAlive() {
+  try {
+    const r = await $fetch.get(WORKER + '/', { timeout: 5000 });
+    return r.status === 200;
+  } catch (e) { return false; }
+}
+
+// ---------------- 分辨率：主清单拆档（2026-11-09） ----------------
+// 播单是 master（含 #EXT-X-STREAM-INF）时按 RESOLUTION 高度拆档出集；
+// 单档媒体播单/拉取失败时回落原单集。只做纯文本解析与地址拼接，
+// 不动 Worker 腿（siguaspw-hls）与 CDN 线路结构。
+async function fetchPlaylistText(url, timeoutMs) {
+  try {
+    const r = await $fetch.get(url, {
+      headers: { 'User-Agent': UA, 'Referer': HOST + '/' },
+      timeout: timeoutMs || 10000,
+    });
+    const t = typeof r.data === 'string' ? r.data : '';
+    return t.includes('#EXTM3U') ? t : '';
+  } catch (e) { return ''; }
+}
+
+// 纯函数：解析 master 文本，返回按高度降序的档位表（同高度留最大码率）。
+// 无 RESOLUTION 高度的档位不采信、不出集；相对地址以播单原地址为基址解析。
+function parseMasterVariants(text, baseUrl) {
+  if (!String(text || '').includes('#EXT-X-STREAM-INF')) return [];
+  const lines = String(text).split(/\r?\n/);
+  const list = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line.startsWith('#EXT-X-STREAM-INF')) continue;
+    let uri = '';
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim()) { uri = lines[j].trim(); break; }
+    }
+    if (!uri) continue;
+    const rm = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+    const bm = line.match(/BANDWIDTH=(\d+)/i);
+    const h = rm ? parseInt(rm[2], 10) : 0;
+    if (!h) continue;
+    let abs = '';
+    if (/^https?:\/\//i.test(uri)) abs = uri;
+    else {
+      try { abs = new URL(uri, baseUrl).toString(); } catch (e) { continue; }
+    }
+    list.push({ h, bw: bm ? parseInt(bm[1], 10) : 0, uri: abs });
+  }
+  const byH = new Map();
+  for (const v of list) {
+    const cur = byH.get(v.h);
+    if (!cur || v.bw > cur.bw) byH.set(v.h, v);
+  }
+  return [...byH.values()].sort((a, b) => b.h - a.h || b.bw - a.bw);
+}
+
+// 对每条线拉一次播单（Worker 活着时走 Worker /m3u8，否则直拉 CDN 原地址），
+// 是 master 则把各档换算成可播地址；返回 Map<线路下标, [{h, target}]>。
+// 拉取失败/单档/档位地址不可用时该线不进表，详情回落原单集。
+async function probeSiguaspwVariants(lines, workerOk, reqIn, durl) {
+  const out = new Map();
+  await Promise.all(lines.map(async (l, idx) => {
+    const src = l._src || '';
+    if (!src) return;
+    const fetchUrl = workerOk ? l.url : src;
+    const text = await fetchPlaylistText(fetchUrl, 10000);
+    if (!text) return;
+    const vs = parseMasterVariants(text, src);
+    if (vs.length < 2) return;
+    const targets = [];
+    for (const v of vs) {
+      let t = v.uri;
+      // 片段地址（变体行被误改成 /seg/ 分片地址时）不是播单，丢弃该档
+      if (t.indexOf('/seg/') >= 0) continue;
+      if (t.indexOf(WORKER + '/m3u8') === 0 || t.indexOf('/proxy/m3u8') >= 0) {
+        // 已是可直接播的播单地址（Worker/本地代理改写过的变体行），直接用
+      } else if (/^https?:\/\//i.test(t)) {
+        t = workerOk ? workerUrl(t) : (proxyUrl(reqIn, '/proxy/m3u8', t, durl) || t);
+      } else {
+        continue;
+      }
+      targets.push({ h: v.h, target: t });
+    }
+    if (targets.length >= 2) out.set(idx, targets);
+  }));
+  return out;
+}
+
+// 线路短名：dfdf.tjacq.com -> dfdf；*.sxtmo.com -> sxtmo；其余用站方 cdnName 或 host 首段。
+function lineNameFor(base, cdnName) {
+  let host = '';
+  try { host = new URL(base).host.toLowerCase(); } catch (e) { host = ''; }
+  if (host.includes('sxtmo')) return 'sxtmo';
+  if (host.startsWith('dfdf.') || host.includes('tjacq')) return 'dfdf';
+  const nm = String(cdnName || '').trim();
+  if (nm) return nm;
+  return host ? host.split('.')[0] : '丝瓜视频';
+}
+
+// ---------------- 播单/分片本地代理（2026-11-07：修手机播不了；仿 24JAV/蘑菇 v2 形态） ----------------
+// 病因见文件头：VM 侧播单/KEY/分片全通，分片是正常 AES-128 密文，解密即纯 TS；
+// 唯一未在手机上验证过的腿是分片 host d3s00p19cjdhyv.cloudfront.net（同族域已有死例）。
+// 代理只做两件事：清单改写（KEY URI、分片行全部指回代理）、分片字节原样透传（支持 Range）。
+// 地址用 Ero/JavFeed 同款查询串形式 {dynamic}{prefix}/proxy/m3u8?u={b64 目标}&r={b64 referer}，
+// 改写后的行用请求 Host 拼完整 http:// 绝对地址，不再依赖播放器解析 js2p:// 基址。
+// 注意：分片是 AES 密文，绝不能像 24JAV 那样剥 PNG 头——密文里偶然出现的 0x47 三联会
+// 误触发剥头、损坏密文；此处字节一律原样透传。KEY 是 16 字节二进制，按原样回传。
+function b64url(s) {
+  try {
+    return Buffer.from(String(s), 'utf8').toString('base64')
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  } catch (e) { return ''; }
+}
+
+function unb64url(s) {
+  return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}
+
+// 构造本地代理地址（js2p://_WEB_ 为 App 动态地址 scheme，同 Ero/JavFeed 先例：查询串形式 /proxy/m3u8?u=&r=）
+function proxyUrl(reqIn, path, targetUrl, referer) {
+  try {
+    const server = reqIn?.server;
+    const dynamic = server?.address?.()?.dynamic || 'js2p://_WEB_';
+    const prefix = server?.prefix || ('/spider/' + KEY + '/3');
+    return `${dynamic}${prefix}${path}?u=${b64url(targetUrl)}&r=${b64url(referer || '')}`;
+  } catch (e) { return ''; }
+}
+
+async function fetchBytes(url, referer) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await $fetch.get(url, {
+        headers: { 'User-Agent': UA, 'Referer': referer || HOST + '/' },
+        timeout: 30000,
+        responseType: 'arraybuffer',
+        validateStatus: () => true,
+      });
+      if (r.status >= 200 && r.status < 300 && r.data) return Buffer.from(r.data);
+    } catch (e) { /* 重试，落空走 302 降级 */ }
+  }
+  return null;
+}
+
+// 改写清单正文：# 行的 URI="..."（KEY）与非 # 行（variant/分片）一律改指回本地代理。
+// selfBase 是完整 http:// 绝对基址（同 Ero/JavFeed：取请求 Host 拼 http://<host>/spider/py_siguaspw/3）。
+// KEY URI 必须改写：原 URI 是相对路径 /keyhome/video.key，播单改走代理后若留相对路径，
+// 播放器会以代理地址为基址解析、404，拿不到 KEY 便解不出任何分片。
+// master 的 variant 行走查询串形式 /proxy/m3u8?u=&r=；媒体清单的分片行走路径段形式并在末尾加 .ts
+// 后缀（过 ffmpeg 分片后缀白名单；b64url 字母表无 '.'，后缀无歧义；代理入口先剥后缀再解码）。
+function rewriteSiguaspwM3u8(raw, playlistUrl, selfBase, referer) {
+  const isMaster = String(raw).includes('#EXT-X-STREAM-INF');
+  const lines = String(raw).split(/\r?\n/);
+  const out = lines.map((line) => {
+    const s = line.trim();
+    if (!s) return line;
+    if (s.startsWith('#')) {
+      if (s.includes('URI="')) {
+        return line.replace(/URI="([^"]+)"/g, (all, uri) => {
+          try {
+            const abs = new URL(uri, playlistUrl).toString();
+            return `URI="${selfBase}/proxy/m3u8?u=${b64url(abs)}&r=${b64url(referer || '')}"`;
+          } catch (e) { return all; }
+        });
+      }
+      return line;
+    }
+    try {
+      const abs = new URL(s, playlistUrl).toString();
+      if (isMaster) return `${selfBase}/proxy/m3u8?u=${b64url(abs)}&r=${b64url(referer || '')}`;
+      return `${selfBase}/proxy/${b64url(abs)}/${b64url(referer || '-')}.ts`;
+    } catch (e) { return line; }
+  });
+  return out.join('\n');
+}
+
+// 代理入口（两种地址格式都接受）：
+// 主格式（本版 detail/play 发出）：/proxy/m3u8?u={b64url}&r={b64url}，同 Ero/JavFeed 先例；
+// 路径段格式（媒体清单的分片行发出）：/proxy/{b64url 目标}/{b64url referer}.ts。
+// 取回的文本是 #EXTM3U 即按清单改写；目标是 .key 即 16 字节密钥原样回传；
+// 否则按分片字节原样透传（AES 密文，不剥头、不改字节，支持 Range，便于拖动）。
+// 代理拉取失败 302 回源地址，不比旧行为更差。
+async function m3u8Proxy(request, reply) {
+  const q = request?.query || {};
+  let uEnc = q.u || '';
+  let rEnc = q.r || '';
+  if (!uEnc) {
+    const wild = request?.params && request.params['*'];
+    let segs = [];
+    if (wild) segs = String(wild).split('/').filter(Boolean);
+    else {
+      const rawPath = String((request?.raw && request.raw.url) || request?.url || '').split('?')[0];
+      const pi = rawPath.indexOf('/proxy/');
+      if (pi >= 0) segs = rawPath.slice(pi + 7).split('/').filter(Boolean);
+    }
+    // 分片行带 .ts 后缀（过 ffmpeg 分片后缀白名单）；b64url 无 '.'，剥后缀无歧义。
+    if (segs.length && segs[segs.length - 1].endsWith('.ts')) {
+      segs[segs.length - 1] = segs[segs.length - 1].slice(0, -3);
+    }
+    if (segs.length) { uEnc = segs[0]; rEnc = segs[1] || ''; }
+  }
+  if (!uEnc) { reply.code(400).send('missing u'); return; }
+  let target = '';
+  let referer = HOST + '/';
+  try {
+    target = unb64url(uEnc);
+    if (rEnc && rEnc !== '-') referer = unb64url(rEnc) || referer;
+  } catch (e) { reply.code(400).send('bad u'); return; }
+  if (!/^https?:\/\//.test(target)) { reply.code(400).send('bad u'); return; }
+  // 改写基址：同 Ero/JavFeed，用请求 Host 拼完整 http:// 绝对地址；上一版用裸 /spider/... 路径是
+  // 24JAV 2026-11-07 19:45 真机“解析不出地址”的病根（播放器须以 js2p:// 为基址解析裸路径）。
+  // 无 Host 时退回 proxyUrl 拼出的 js2p:// 形式（与上一版行为一致，不比旧行为更差）。
+  const host = request.headers && request.headers.host;
+  const selfBase = host
+    ? `http://${host}/spider/${KEY}/3`
+    : (proxyUrl(request, '', '', '').replace(/\?.*$/, '') || `/spider/${KEY}/3`);
+  try {
+    const buf = await fetchBytes(target, referer);
+    if (!buf || !buf.length) { reply.redirect(target); return; }
+    const head = buf.subarray(0, Math.min(buf.length, 16)).toString('utf8');
+    if (head.trimStart().startsWith('#EXTM3U')) {
+      reply.header('Content-Type', 'application/vnd.apple.mpegurl');
+      reply.header('Cache-Control', 'no-cache');
+      reply.send(rewriteSiguaspwM3u8(buf.toString('utf8'), target, selfBase, referer));
+      return;
+    }
+    // KEY 文件（16 字节二进制）：原样回传，Content-Type 用 octet-stream，不当作分片处理。
+    if (/\.key(\?|#|$)/i.test(target)) {
+      reply.header('Content-Type', 'application/octet-stream');
+      reply.header('Cache-Control', 'no-cache');
+      reply.send(buf);
+      return;
+    }
+    const range = request?.headers && request.headers.range;
+    const m = range ? String(range).match(/bytes=(\d+)-(\d*)/) : null;
+    reply.header('Content-Type', 'video/mp2t');
+    reply.header('Cache-Control', 'no-cache');
+    reply.header('Accept-Ranges', 'bytes');
+    if (m) {
+      const start = Math.min(parseInt(m[1], 10) || 0, buf.length);
+      const end = m[2] ? Math.min(parseInt(m[2], 10), buf.length - 1) : buf.length - 1;
+      if (start <= end) {
+        reply.code(206);
+        reply.header('Content-Range', 'bytes ' + start + '-' + end + '/' + buf.length);
+        reply.send(buf.subarray(start, end + 1));
+        return;
+      }
+    }
+    reply.send(buf);
+  } catch (e) {
+    try { reply.redirect(target); } catch (e2) { /* 已发送则忽略 */ }
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const ZONE_META = [
+  { id: 'zone_creator', name: '主播达人', key: 'creator' },
+  { id: 'zone_tag', name: '题材标签', key: 'tag' },
+  { id: 'zone_media', name: '传媒厂牌', key: 'media' },
+  { id: 'zone_more', name: '更多精选', key: 'more' },
+];
+
+async function home() {
+  const classes = [{ type_id: 'home', type_name: '首页推荐' }];
+  for (const z of ZONE_META) classes.push({ type_id: z.id, type_name: z.name });
+  // 2026-11-04 用户点名加的 2 个顶级分类（已证实 ID：无码破解 cate205、大奶美乳 cate164），放在主播达人后面。
+  const USER_CLASSES = [
+    { type_id: 'cate205', type_name: '无码破解' },
+    { type_id: 'cate164', type_name: '大奶美乳' },
+  ];
+  classes.splice(2, 0, ...USER_CLASSES);
+  // 2026-11-04 新增顶级分类：题材标签区已证实的 8 个 cate（名与 ID 均取自首页实测 ZONES.tag）。
+  // 注意：用户点名的 无码流出 / 巨乳 / 大屁股 在数据里无完全对应名字，本轮未加（见报告），
+  // 也不用同义词顶替；下面 8 个是已证实的题材标签，与原有 5 类、filters 互不干扰。
+  // category() 的兜底分支（非 home、非 zone id 时直接以 type_id 作 cate）已覆盖这些类，无需改 category()。
+  const EXTRA_CLASSES = [
+    { type_id: 'cate151', type_name: '探花' },
+    { type_id: 'cate153', type_name: '出轨偷情' },
+    { type_id: 'cate158', type_name: '女女同性' },
+    { type_id: 'cate160', type_name: 'SM调教' },
+    { type_id: 'cate163', type_name: '户外露出' },
+    { type_id: 'cate166', type_name: '制服诱惑' },
+    { type_id: 'cate167', type_name: '校园女神' },
+    { type_id: 'cate168', type_name: '按摩会所' },
+  ];
+  for (const c of EXTRA_CLASSES) classes.push(c);
+  const filters = {};
+  for (const z of ZONE_META) {
+    const list = ZONES[z.key] || [];
+    if (list.length) filters[z.id] = [{ key: 'sub', name: '细分分类', value: list.map((c) => ({ n: c.n, v: c.v })) }];
+  }
+  let list = [];
+  try { list = parseCards(await getHtml('/'), HOST).slice(0, 20); } catch (e) { list = []; }
+  return { class: classes, filters, list };
+}
+
+async function category(reqIn) {
+  const body = reqIn?.body || {};
+  const zoneId = String(Array.isArray(body.id) ? body.id[0] : body.id || body.tid || '');
+  const page = Math.max(1, parseInt(body.page, 10) || 1);
+  const extend = body.filters || body.extend || {};
+  if (zoneId === 'home' || !zoneId) {
+    // 2026-11-08：首页翻页修——站方首页分页在 /page/<N>/（p1~p5 实测各 20 条新片、页间零重叠），
+    // 但首页 HTML 里没有任何下一页链接/总页数（只有 #pageNum 跳页框，且无 data-uri、点不了），
+    // 且实测出现过一次 p3 只回 16 条的短页（随即复测又回 20 条、p4/p5 均满页），故短页不能当到底：
+    // 只有空页才到底（page），非空页一律报 page+1，由 App 翻到空页为止。
+    const html = await getHtml(page === 1 ? '/' : '/page/' + page + '/');
+    const list = parseCards(html, HOST);
+    return { page, pagecount: list.length ? page + 1 : page, list };
+  }
+  const z = ZONE_META.find((x) => x.id === zoneId);
+  const list0 = z ? (ZONES[z.key] || []) : [];
+  const cate = String(extend.sub || '').trim() || (list0.length ? list0[0].v : zoneId);
+  const path = page === 1 ? ('/category/' + cate + '/') : ('/category/' + cate + '/' + page + '/');
+  const html = await getHtml(path);
+  const list = parseCards(html, HOST);
+  const next = html.includes('/category/' + cate + '/' + (page + 1) + '/');
+  return { page, pagecount: next ? page + 1 : page, list };
+}
+
+async function searchCat(reqIn) {
+  const body = reqIn?.body || {};
+  const kw = String(body.wd || '').trim();
+  if (!kw) return { list: [] };
+  const html = await getHtml('/search/' + encodeURIComponent(kw) + '/');
+  return { page: 1, pagecount: 1, list: parseCards(html, HOST) };
+}
+
+async function detail(reqIn) {
+  const body = reqIn?.body || {};
+  const rawId = String(Array.isArray(body.id) ? body.id[0] : body.id || '');
+  if (!rawId) return { list: [] };
+  const durl = rawId.startsWith('http') ? rawId : HOST + rawId;
+  // Worker 探活与取页并发跑：探活慢不拖详情（getHtml 本身约 1-4s）。
+  const aliveP = workerAlive();
+  const html = await getHtml(rawId);
+  const workerOk = await aliveP.catch(() => false);
+  const tM = html.match(/<title>(.*?)<\/title>/i);
+  let mainTitle = '精彩视频';
+  if (tM) mainTitle = cleanLabel(tM[1]).replace(/\s*-\s*丝瓜视频\s*$/i, '').trim() || '精彩视频';
+  subCacheName(durl, mainTitle);
+  let posterPic = '';
+  const ogM = html.match(/property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+  if (ogM) posterPic = normUrl(ogM[1].trim());
+  if (!posterPic) {
+    const cm = html.match(/https:\/\/[^\s"'<>]+\/image\/[^\s"'<>]+/);
+    if (cm) posterPic = cm[0];
+  }
+  // 2026-11-08：按 cdn_lines 出 dfdf/sxtmo 两条可选线（vod_play_from 以 $$$ 分组、
+  // 组内集以 # 连接，每集带可播 videoUrl，点哪条播哪条）；解不出的线不整条消失——
+  // 下面 lines 只要拼出播单地址就留名，播单地址拼不出的线才不进表（并在报告里记一笔）。
+  // 主路 Worker（已在用户手机上证实能播）；Worker 探活失败才回落本地 js2p 代理线。
+  const dataUrl = extractDataUrl(html);
+  const lines = [];
+  if (dataUrl) {
+    const bases = parseCdnLines(html);
+    for (const it of bases) {
+      // parseCdnLines 回的是字符串数组（旧口径）；同时兼容对象形 {cdnLine, cdnName}。
+      const raw = (typeof it === 'string') ? it : (it && it.cdnLine) || '';
+      const cdnName = (it && it.cdnName) || '';
+      const base = String(raw || '').replace(/\/+$/, '').replace(/^(https?:)\/([^\/])/, '$1//$2');
+      if (!base.startsWith('http')) continue;
+      let playUrl = '';
+      if (dataUrl.startsWith('http')) playUrl = dataUrl;
+      else playUrl = base + (dataUrl.startsWith('/') ? dataUrl : '/' + dataUrl);
+      if (!playUrl) continue;
+      const name = lineNameFor(base, cdnName);
+      const url = workerOk
+        ? workerUrl(playUrl)
+        : (proxyUrl(reqIn, '/proxy/m3u8', playUrl, durl) || workerUrl(playUrl));
+      let baseHost = '';
+      try { baseHost = new URL(base).host.toLowerCase(); } catch (e) { baseHost = ''; }
+      lines.push({ name, url, _src: playUrl, _baseHost: baseHost });
+    }
+    // d22 备用线分片宿主已死（2026-11-08 直连与经 Worker 均拉不到分片）：有其他
+    // 可播线时跳过它；若过滤后为空（只剩 d22）则保留全部，不留空详情。
+    const kept = lines.filter((l) => !DEAD_LINE_HOSTS.includes(l._baseHost || ''));
+    if (kept.length) { lines.length = 0; lines.push(...kept); }
+    for (const l of lines) delete l._baseHost;
+  }
+  // 兜底：cdn_lines 解析失败但 data-url 还在时，走旧单线（站方默认首条），不断详情。
+  if (!lines.length && dataUrl) {
+    const bases = parseCdnLines(html);
+    const base = pickPlayBase(bases);
+    let playUrl = '';
+    if (dataUrl.startsWith('http')) playUrl = dataUrl;
+    else if (base) playUrl = base.replace(/\/+$/, '') + (dataUrl.startsWith('/') ? dataUrl : '/' + dataUrl);
+    if (playUrl) {
+      const url = workerOk
+        ? workerUrl(playUrl)
+        : (proxyUrl(reqIn, '/proxy/m3u8', playUrl, durl) || workerUrl(playUrl));
+      lines.push({ name: '丝瓜视频', url, _src: playUrl });
+    }
+  }
+  // 2026-11-08：预览片标注——站方对部分片只给 _preview.m3u8 播单（全站抽查 432 部：81 部是预览，均为 1 分片、0.9~16.7 秒，
+  // 多数约 10 秒；页内明写“预览已结束，下载 APP 可观看完整视频”，去掉 _preview 后缀取正片播单站方回 502，
+  // 全页无第二个播单地址可换）。故不改播放地址，只在详情里标明：集名改“预览”、备注标时长，免得用户当正片点开只看 10 秒。
+  // 无播单时（详情页站方 500、或“直播线常驻”占位页无 data-url）备注标“已失效”。
+  const isPreview = dataUrl.includes('_preview');
+  const epName = isPreview ? '预览' : '正片';
+  // 分辨率（2026-11-09）：预览片与单档播单不拆；每条线拉一次播单，是 master
+  // 才按档出集（集名取高度），其余一律回落原单集，不阻塞详情。
+  let variantMap = new Map();
+  if (!isPreview && lines.length) {
+    variantMap = await probeSiguaspwVariants(lines, workerOk, reqIn, durl).catch(() => new Map());
+  }
+  for (const l of lines) delete l._src;
+  const from = lines.length ? lines.map((l) => l.name).join('$$$') : '丝瓜视频';
+  const url = lines.length
+    ? lines.map((l, idx) => {
+        const vs = variantMap.get(idx);
+        if (vs && vs.length >= 2) return vs.map((v) => v.h + 'p$' + durl + '@@' + v.target).join('#');
+        return epName + '$' + durl + '@@' + l.url;
+      }).join('$$$')
+    : '';
+  return {
+    list: [{
+      vod_id: rawId,
+      vod_name: mainTitle,
+      vod_pic: proxyCover(posterPic),
+      vod_remarks: !lines.length ? '已失效' : (isPreview ? '预览·约10秒' : 'HD'),
+      vod_content: '丝瓜视频',
+      vod_play_from: from,
+      vod_play_url: url,
+    }],
+  };
+}
+
+async function play(reqIn) {
+  const body = reqIn?.body || {};
+  let id = String(Array.isArray(body.id) ? body.id[0] : body.id || '');
+  if (id.includes('$')) id = id.split('$').pop();
+  if (!id) return { parse: 0, url: '' };
+  let durl = '';
+  let target = id;
+  const at = id.indexOf('@@');
+  if (at >= 0) { durl = id.slice(0, at); target = id.slice(at + 2); }
+  if (!target) return { parse: 0, url: '' };
+  // 2026-11-08：按地址形态分发，单路出线、不两套并存——
+  // Worker 地址（新详情）与 js2p 本地代理地址（旧缓存）原样直出，不重复包；
+  // 旧缓存的 CDN 直链：探活 Worker（5s），活着包 Worker /m3u8，死了才包本地代理。
+  if (target.indexOf('/proxy/') >= 0 || target.indexOf(WORKER + '/') === 0) {
+    // 原样直出
+  } else if (/^https?:\/\//.test(target)) {
+    const ok = await workerAlive();
+    if (ok) target = workerUrl(target);
+    else {
+      const proxied = proxyUrl(reqIn, '/proxy/m3u8', target, durl || HOST + '/');
+      if (proxied) target = proxied;
+    }
+  }
+  // 字幕按条目接：仅当标题或地址含番号才搜，否则不带 subs 键
+  const title = subNameCache.get(durl) || '';
+  const code = subExtractCode(title) || subExtractCode(durl);
+  const subsP = code ? subSearchAll(durl).catch(() => []) : Promise.resolve([]);
+  const result = { parse: 0, url: target, header: { 'User-Agent': UA, 'Referer': HOST + '/' } };
+  const subs = await subsP;
+  if (subs && subs.length) result.subs = subs;
+  return result;
+}
+
+// 猫版字幕芯已移除（字幕改由 XPTV 版 subSearch 在 getPlayinfo 内按片名查）；旧调用留空壳，避免残留调用报错。
+async function subSearchAll() { return []; }
+function subWarm() {}
+function subRegister() {}
+function subAttach(r) { return r; }
+function subCacheName() {}
+function subSlugTitle() { return ''; }
+const subNameCache = new Map();
+const subResultCache = new Map();
+
+// ---------------- 字幕聚合 (XPTV 版，照 avdb 新芯) ----------------
+const SUB_UA = UA;
+
+// subHttp: 与猫版同语义 (状态码不抛错、仅 2xx 给正文), 底层
+// $fetch.get; data 已被运行时解析成对象时回序列化成文本。
+async function subHttp(url, headers, timeoutMs) {
+    try {
+        const r = await $fetch.get(url, { headers: headers || {}, timeout: timeoutMs || 10000 });
+        const data = r ? r.data : null;
+        const body = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+        const status = r && typeof r.status === 'number' ? r.status : (body ? 200 : 0);
+        return { status, body: status >= 200 && status < 300 ? body : '' };
+    } catch (e) {
+        return { status: 0, body: '' };
+    }
+}
+
+// 番号抽取 (移植自迅雷看看 REX 组件 extractSearchCode 的核心档)
+function subExtractCode(text) {
+    const s = String(text || '').toUpperCase().replace(/[._]/g, ' ').replace(/\s+/g, ' ');
+    const pats = [
+        /\bFC2(?:[- ]?PPV)?[- ]?\d{5,8}\b/,
+        /\bCARIB(?:PR)?[- ]?\d{6,8}\b/,
+        /\b1PONDO[- ]?\d{6,8}\b/,
+        /\bHEYZO[- ]?\d{3,6}\b/,
+        /\b[A-Z]{2,10}[- ]\d{2,8}[A-Z]?\b/,
+        /\b[A-Z]{2,10}\d{2,8}[A-Z]?\b/,
+    ];
+    for (const re of pats) {
+        const m = s.match(re);
+        if (m) return m[0].replace(/\s+/g, '-').replace(/-+/g, '-');
+    }
+    return '';
+}
+
+// 语言判定: rank 越小越优先 (简中 > 繁中 > 双语 > 英文 > 日文 > 其他)
+function subLangOf(name, langs) {
+    const s = (String(name || '') + ' ' + String(langs || '')).toLowerCase();
+    if (/简体|简中|chs|zh[-_. ]?cn|zh[-_. ]?hans/.test(s)) return { tag: '简中', rank: 0 };
+    if (/繁体|繁中|cht|zh[-_. ]?tw|zh[-_. ]?hk|zh[-_. ]?hant/.test(s)) return { tag: '繁中', rank: 1 };
+    if (/双语|中英|中日|bilingual/.test(s)) return { tag: '双语', rank: 2 };
+    if (/英文|english|eng|(^|[-_. ])en([-_. ]|$)/.test(s)) return { tag: '英文', rank: 3 };
+    if (/日文|日语|japanese|jpn|(^|[-_. ])ja([-_. ]|$)/.test(s)) return { tag: '日文', rank: 4 };
+    return { tag: '', rank: 5 };
+}
+
+const SUB_TEXT_RE = /\.(srt|vtt|ass|ssa)(\?|#|$)/i;
+const SUB_NOISE_RE = /\b(UNCENSORED|LEAKED|LEAK|OTHER|COMPLETE|FULL|HDR|WEB|BLURAY|BDRIP|WEBDL|REMUX|X264|X265|10BIT|8BIT|HEVC|AVC)\b/gi;
+
+function subStripEp(text) {
+    return String(text || '').trim()
+        .replace(/\b(?:第\s*\d+\s*集|第\s*\d+\s*話|EP\s*\d+|E\s*\d+|S\d{1,2}E\d{1,2}|\d{1,2}x\d{1,2}|Season\s*\d+\s*Episode\s*\d+)\b/gi, ' ')
+        .replace(/\b(?:第\s*\d+\s*季|Season\s*\d+)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function subLoose(s) {
+    return String(s || '').replace(/[-_\s.]/g, '');
+}
+
+function subFirstNumber() {
+    for (let i = 0; i < arguments.length; i++) {
+        const n = Number(arguments[i]);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    return 0;
+}
+
+function subParseDuration(value) {
+    if (value == null) return 0;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const text = String(value || '').trim();
+    if (!text) return 0;
+    if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
+    const hms = text.match(/(?:(\d+):)?(\d{1,2}):(\d{2})/);
+    if (hms) return Number(hms[1] || 0) * 3600 + Number(hms[2] || 0) * 60 + Number(hms[3] || 0);
+    const zh = text.match(/(\d+)\s*小时(?:\s*(\d+)\s*分(?:钟)?)?(?:\s*(\d+)\s*秒)?/);
+    if (zh) return Number(zh[1] || 0) * 3600 + Number(zh[2] || 0) * 60 + Number(zh[3] || 0);
+    return 0;
+}
+
+function subExtOf(name) {
+    if (!name) return '';
+    const s = String(name).toLowerCase();
+    if (s.endsWith('.srt')) return '.srt';
+    if (s.endsWith('.ass')) return '.ass';
+    if (s.endsWith('.ssa')) return '.ssa';
+    if (s.endsWith('.vtt')) return '.vtt';
+    return '';
+}
+
+// 搜索上下文 + 组件法键序 (照 xunlei.subtitle buildSearchKeys,
+// 片名直接取自 track.ext): 有番号时 [番号, 紧凑番号, 番号+标题
+// 余部, 紧凑番号+标题余部, 全标题]; 迅雷槽只取 [番号, 紧凑番号]。
+function subBuildCtx(title) {
+    const rawText = String(title || '').trim();
+    const displayText = subStripEp(rawText);
+    const code = subExtractCode(rawText) || subExtractCode(displayText);
+    const keysAll = [];
+    if (code) {
+        const titlePart = displayText
+            .replace(new RegExp(code.replace(/[-_]/g, '[-_ ]?'), 'i'), '')
+            .replace(SUB_NOISE_RE, '')
+            .replace(/\b(?:EP|E|S|SEASON)\s*\d{1,3}\b/gi, '')
+            .replace(/^[\s\-_:]+|[\s\-_:]+$/g, '')
+            .trim();
+        const compact = code.replace(/[-_ ]/g, '');
+        keysAll.push(code, compact);
+        if (titlePart && titlePart !== code) keysAll.push(code + ' ' + titlePart);
+        if (titlePart && titlePart !== compact) keysAll.push(compact + ' ' + titlePart);
+    }
+    if (displayText) keysAll.push(displayText);
+    return {
+        code,
+        compact: code ? code.replace(/[-_ ]/g, '') : '',
+        displayText,
+        rawText,
+        keysAll: [...new Set(keysAll)].filter((k) => k.length >= 2),
+        xunleiKeys: code ? [code, code.replace(/[-_ ]/g, '')] : (displayText ? [displayText] : []),
+        catKey: code || displayText,
+        matchText: subStripEp(rawText).toLowerCase(),
+        titleLower: rawText.toLowerCase(),
+    };
+}
+
+// 条目文本 (name + langs + ext) 是否与番号/片名相关 (组件严过滤)
+function subRelevant(it, ctx) {
+    const text = (String(it.name || '') + ' ' + String(it.langs || '') + ' ' + String(it.ext || '')).toLowerCase();
+    const textLoose = subLoose(text);
+    if (ctx.code) {
+        const cl = ctx.code.toLowerCase();
+        if (text.indexOf(cl) >= 0 || textLoose.indexOf(subLoose(cl)) >= 0) return true;
+    }
+    const mt = ctx.matchText;
+    const tl = ctx.titleLower;
+    if (mt && text.indexOf(mt) >= 0) return true;
+    if (mt && textLoose.indexOf(subLoose(mt)) >= 0) return true;
+    if (tl && text.indexOf(tl) >= 0) return true;
+    if (tl && textLoose.indexOf(subLoose(tl)) >= 0) return true;
+    if (text && mt && mt.indexOf(text) >= 0) return true;
+    return false;
+}
+
+// 片名有效词元 (相关性闸门用): 拉丁/数字词 >=3 字符、汉字串
+// >=2 字。单字召回 (如生僻字「龘」) 过不了这一关。
+function subTitleTokens(title) {
+    const t = String(title || '').toLowerCase();
+    const toks = [];
+    let m;
+    const re = /[a-z0-9]+/g;
+    while ((m = re.exec(t)) !== null) if (m[0].length >= 3) toks.push(m[0]);
+    const re2 = /[一-鿿]+/g;
+    while ((m = re2.exec(t)) !== null) if (m[0].length >= 2) toks.push(m[0]);
+    return toks;
+}
+
+function subTokenHit(name, tokens) {
+    const n = String(name || '').toLowerCase();
+    for (let i = 0; i < tokens.length; i++) if (n.indexOf(tokens[i]) >= 0) return 1;
+    return 0;
+}
+
+// 严过滤: 有番号时过滤到空即空 (不回退); 无番号时回退名单也
+// 要过词元闸门。
+function subStrictFilter(items, ctx) {
+    const kept = items.filter((it) => subRelevant(it, ctx));
+    if (kept.length) return kept;
+    if (ctx.code) return [];
+    const toks = subTitleTokens(ctx.displayText);
+    return items.filter((it) => subTokenHit(it.name, toks));
+}
+
+// 组件打分 (scoreItem 的电影路径)
+function subScoreOracle(it, ctx) {
+    const text = (String(it.name || '') + ' ' + String(it.langs || '') + ' ' + String(it.ext || '')).toLowerCase();
+    const textLoose = subLoose(text);
+    let score = (it.cid_match ? 100000 : 0) + (Number(it.down_count) || 0) / 10000;
+    if (ctx.code) {
+        const cl = ctx.code.toLowerCase();
+        if (text.indexOf(cl) >= 0 || textLoose.indexOf(subLoose(cl)) >= 0) score += 25000;
+        score += 500;
+    }
+    score += Math.max(0, Number(it.score) || 0);
+    score += Math.max(0, Number(it.fingerprintScore) || 0);
+    if (Number(it.duration) > 0) score += 50;
+    if (Number(it.file_size) > 0) score += Math.min(Number(it.file_size) / 1024 / 1024, 20);
+    if (ctx.titleLower && (text.indexOf(ctx.titleLower) >= 0 || textLoose.indexOf(subLoose(ctx.titleLower)) >= 0)) score += 1000;
+    if (text.indexOf('sub') >= 0 || text.indexOf('subtitle') >= 0 || text.indexOf('字幕') >= 0) score += 300;
+    return score;
+}
+
+// oracle 条目归一 (照组件 normalizeResult 的字段别名口径)
+function subNormOracle(item) {
+    const duration = subFirstNumber(
+        subParseDuration(item && item.Duration), subParseDuration(item && item.duration),
+        subParseDuration(item && item.TimeLength), subParseDuration(item && item.time_length),
+        subParseDuration(item && item.Length), subParseDuration(item && item.length),
+        subParseDuration(item && item.VideoDuration), subParseDuration(item && item.video_duration),
+        subParseDuration(item && item.Dur), subParseDuration(item && item.dur),
+        subParseDuration(item && item.Runtime), subParseDuration(item && item.runtime),
+        subParseDuration(item && item.PlayTime), subParseDuration(item && item.play_time));
+    const fileSize = subFirstNumber(
+        item && item.FileSize, item && item.file_size, item && item.Size, item && item.size,
+        item && item.FileSizeBytes, item && item.fileSize, item && item.filesize,
+        item && item.SubSize, item && item.sub_size, item && item.Subsize, item && item.subsize,
+        item && item.LengthBytes, item && item.length_bytes, item && item.Bytes, item && item.bytes);
+    const name = String((item && (item.Name || item.name || item.Title || item.title || item.FileName || item.filename)) || '迅雷字幕').trim();
+    return {
+        name,
+        langs: String((item && (item.Langs || item.langs || (Array.isArray(item.Languages) ? item.Languages.join(',') : item.Languages) || item.lang || item.language)) || '').trim(),
+        ext: String((item && (item.Ext || item.ext || item.Format || item.format)) || '').trim() || subExtOf(name) || '.srt',
+        url: String((item && (item.Url || item.url)) || '').trim(),
+        down_count: Number((item && (item.DownCount || item.down_count || item.Download || item.download || item.Downloads || item.downloads)) || 0),
+        cid_match: Boolean(item && (item.CidMatch != null ? item.CidMatch : item.cid_match)),
+        duration,
+        file_size: fileSize,
+        score: Number((item && (item.Score || item.score)) || 0),
+        fingerprintScore: Number((item && (item.FingerprintfScore || item.fingerprintfScore || item.FingerprintScore || item.fingerprintScore)) || 0),
+    };
+}
+
+// oracle 单键查询: 归一后的条目数组 (仅文本字幕直链); 失败 []
+async function subOracleQuery(key) {
+    const r = await subHttp('https://api-shoulei-ssl.xunlei.com/oracle/subtitle?name=' + encodeURIComponent(key),
+        { 'User-Agent': 'ForwardWidgets/1.0.2', Accept: '*/*' }, 5000);
+    if (r.status !== 200 || !r.body) return [];
+    let j;
+    try { j = JSON.parse(r.body); } catch (e) { return []; }
+    if (!j || Number(j.code) !== 0 || !Array.isArray(j.data)) return [];
+    const out = [];
+    for (const raw of j.data) {
+        const it = subNormOracle(raw);
+        if (!it.url || !SUB_TEXT_RE.test(it.url)) continue;
+        out.push(it);
+    }
+    return out;
+}
+
+// oracle 槽: 键序逐个查、首个有结果的键即停 (组件原法); 命中
+// 名单过严过滤 + 打分后入 bag。
+async function subOracleSlot(src, tier, keys, ctx, bag) {
+    for (const key of keys) {
+        const items = await subOracleQuery(key);
+        if (!items.length) continue;
+        const kept = subStrictFilter(items, ctx);
+        for (const it of kept) {
+            const lang = subLangOf(it.name, it.langs);
+            const dispName = /^[0-9a-f]{24,}$/i.test(it.name.trim()) ? (ctx.code ? ctx.code + ' 迅雷字幕' : '迅雷字幕') : it.name;
+            bag.push({
+                src, tier, name: dispName, url: it.url, lang: lang.tag, langRank: lang.rank,
+                score: subScoreOracle(it, ctx), dl: it.down_count,
+            });
+        }
+        break;
+    }
+}
+
+// SubtitleCat 槽: 搜索页 -> 字幕页 (前 3) -> 按语言分的直链;
+// 文件名同样过严过滤 (有番号时不回退)。
+async function subFromSubtitleCat(ctx, bag) {
+    const key = ctx.catKey;
+    if (!key) return;
+    const r = await subHttp('https://subtitlecat.com/index.php?search=' + encodeURIComponent(key),
+        { 'User-Agent': SUB_UA, Referer: 'https://subtitlecat.com/' }, 5000);
+    if (r.status !== 200 || !r.body) return;
+    const pages = [];
+    const seen = new Set();
+    for (const m of r.body.matchAll(/href="(subs\/\d+\/[^"]+\.html)"/g)) {
+        if (seen.has(m[1])) continue;
+        seen.add(m[1]);
+        pages.push(m[1]);
+        if (pages.length >= 3) break;
+    }
+    await Promise.all(pages.map(async (p) => {
+        const pr = await subHttp('https://subtitlecat.com/' + p, { 'User-Agent': SUB_UA, Referer: 'https://subtitlecat.com/' }, 4000);
+        if (pr.status !== 200 || !pr.body) return;
+        const rawItems = [];
+        for (const m of pr.body.matchAll(/href="(\/subs\/\d+\/[^"]+\.(?:srt|vtt|ass))"/gi)) {
+            let nm = m[1].split('/').pop() || '字幕';
+            try { nm = decodeURIComponent(nm); } catch (e) { /* 保持原样 */ }
+            rawItems.push({ name: nm, langs: '', ext: subExtOf(nm), url: 'https://subtitlecat.com' + m[1] });
+        }
+        const kept = rawItems.filter((it) => subRelevant(it, ctx));
+        for (const it of kept) {
+            const lang = subLangOf(it.name, '');
+            let sc = 0;
+            if (ctx.code) {
+                const nl = it.name.toLowerCase();
+                if (nl.indexOf(ctx.code.toLowerCase()) >= 0 || subLoose(nl).indexOf(subLoose(ctx.code.toLowerCase())) >= 0) sc += 25000;
+            }
+            if (it.name.toLowerCase().indexOf('sub') >= 0) sc += 300;
+            bag.push({
+                src: 'SubtitleCat', tier: 2, name: it.name, url: it.url,
+                lang: lang.tag, langRank: lang.rank, score: sc, dl: 0,
+            });
+        }
+    }));
+}
+
+// 合并: URL 去重 (同 URL 保留高档位来源) + (语言|去扩展名文件
+// 名) 去重; 排序 档位 -> 语言 -> 分数; 单槽软上限 8、全局上
+// 限 10。
+function subMerge(items) {
+    const sorted = items.slice().sort((a, b) =>
+        (a.tier - b.tier) || (a.langRank - b.langRank) || (b.score - a.score) || String(a.name).localeCompare(String(b.name)));
+    const seenUrl = new Set();
+    const seenName = new Set();
+    const tierCount = {};
+    const out = [];
+    for (const it of sorted) {
+        if (seenUrl.has(it.url)) continue;
+        const nameKey = it.lang + '|' + it.name.toLowerCase().replace(/\.(srt|vtt|ass|ssa)$/i, '');
+        if (seenName.has(nameKey)) continue;
+        if ((tierCount[it.tier] || 0) >= 8) continue;
+        seenUrl.add(it.url);
+        seenName.add(nameKey);
+        tierCount[it.tier] = (tierCount[it.tier] || 0) + 1;
+        const ext = (it.url.match(SUB_TEXT_RE) || [])[1].toLowerCase();
+        const cleanName = it.name.replace(/\.(srt|vtt|ass|ssa)$/i, '').slice(0, 60);
+        out.push({ name: it.src + '·' + (it.lang ? it.lang + '·' : '') + cleanName, url: it.url, format: ext });
+        if (out.length >= 10) break;
+    }
+    return out;
+}
+
+// 一次搜索: 三槽并行, 各自失败静默; 无键/无命中返回 []。
+async function subSearch(title) {
+    const ctx = subBuildCtx(title);
+    if (!ctx.keysAll.length && !ctx.catKey) return [];
+    const bag = [];
+    await Promise.all([
+        Promise.resolve(subOracleSlot('迅雷', 0, ctx.xunleiKeys, ctx, bag)).catch(() => {}),
+        Promise.resolve(subOracleSlot('迅雷看看', 1, ctx.keysAll, ctx, bag)).catch(() => {}),
+        Promise.resolve(subFromSubtitleCat(ctx, bag)).catch(() => {}),
+    ]);
+    return subMerge(bag);
+}
+
+// ---------------- XPTV 适配层 ----------------
+// 猫源 home/category/detail/play/search 原样保留；以下 5 个 XPTV 入口做薄适配。
+async function getConfig() {
+    const h = await home();
+    const tabs = (h && Array.isArray(h.class) ? h.class : []).map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
+    return jsonify({ ver: 1, title: '丝瓜视频', site: 'https://siguaspw.cc', tabs: tabs.length ? tabs : [{ name: '全部', ext: { id: '' } }] });
+}
+
+async function getCards(ext) {
+    ext = argsify(ext);
+    const r = await category({ body: { id: ext.id || '', page: ext.page || 1 } });
+    const list = (r && Array.isArray(r.list) ? r.list : []).map((c) => ({
+        vod_id: String(c.vod_id || ''),
+        vod_name: c.vod_name || '',
+        vod_pic: c.vod_pic || '',
+        vod_remarks: c.vod_remarks || '',
+        ext: { id: String(c.vod_id || ''), name: c.vod_name || '' },
+    }));
+    return jsonify({ list });
+}
+
+function parseTracks(playUrl, vodName) {
+    const tracks = [];
+    if (!playUrl) return tracks;
+    const groups = String(playUrl).split('$$$');
+    for (const g of groups) {
+        for (const ep of g.split('#')) {
+            if (!ep) continue;
+            const idx = ep.indexOf('$');
+            const nm = idx >= 0 ? ep.slice(0, idx) : '播放';
+            const u = idx >= 0 ? ep.slice(idx + 1) : ep;
+            if (u) tracks.push({ name: nm || '播放', pan: '', ext: { url: u, name: vodName || '' } });
+        }
+    }
+    return tracks;
+}
+
+async function getTracks(ext) {
+    ext = argsify(ext);
+    const r = await detail({ body: { id: ext.id } });
+    const item = (r && Array.isArray(r.list) && r.list[0]) || null;
+    const tracks = item ? parseTracks(item.vod_play_url, item.vod_name) : [];
+    return jsonify({ list: [{ title: '在线播放', tracks }] });
+}
+
+async function getPlayinfo(ext) {
+    ext = argsify(ext);
+    const url = String(ext.url || '');
+    if (!url) return jsonify({ urls: [], headers: [] });
+    const r = await play({ body: { id: url } });
+    const result = { urls: [r.url || url], headers: [r.header || {}] };
+    const name = String(ext.name || '');
+    if (name) {
+        try { const subs = await subSearch(name); if (subs && subs.length) result.subs = subs; } catch (e) {}
+    }
+
+    return jsonify(result);
+}
+
+async function search(ext) {
+    ext = argsify(ext);
+    const wd = String(ext.text || '').trim();
+    if (!wd) return jsonify({ list: [] });
+    const r = await searchCat({ body: { wd, page: ext.page || 1 } });
+    const list = (r && Array.isArray(r.list) ? r.list : []).map((c) => ({
+        vod_id: String(c.vod_id || ''),
+        vod_name: c.vod_name || '',
+        vod_pic: c.vod_pic || '',
+        vod_remarks: c.vod_remarks || '',
+        ext: { id: String(c.vod_id || ''), name: c.vod_name || '' },
+    }));
+    return jsonify({ list });
+}
