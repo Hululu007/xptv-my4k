@@ -69,22 +69,31 @@ function headers(referer) {
 
 async function getHtml(url, referer) {
     const h = headers(referer);
+    // 2026-11-19 设备侧修正：不强制 r.status === 200——设备 $fetch 的 status
+    // 可能为 undefined，旧写法会把已拿到手的真 HTML 也跳过；只以 looksRealHtml 为准。
+    // r.data 若被解析成对象则序列化后再判。
+    const asText = (d) => (typeof d === 'string' ? d : (d == null ? '' : JSON.stringify(d)));
     try {
         const r = await $fetch.get(MISSAV_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
-        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+        const txt = asText(r && r.data);
+        if (looksRealHtml(txt)) return txt;
     } catch (e) {}
     try {
         const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
-        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+        const txt = asText(r && r.data);
+        if (looksRealHtml(txt)) return txt;
     } catch (e) {}
     try {
         const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
         const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
-        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+        const txt = asText(r && r.data);
+        if (looksRealHtml(txt)) return txt;
     } catch (e) {}
     try {
         const { data } = await $fetch.get(url, { headers: h, timeout: 15000 });
-        return typeof data === 'string' ? data : String(data || '');
+        const txt = asText(data);
+        if (looksRealHtml(txt)) return txt;
+        return txt;
     } catch (e) {
         return '';
     }
@@ -105,24 +114,58 @@ function absUrl(u) {
 function parseCards(html) {
     const cards = [];
     if (!html || html.includes('Just a moment...')) return cards;
-    const $ = cheerio.load(html);
-    $('.thumbnail').each((_, e) => {
-        const el = $(e);
-        const href = el.find('.text-secondary').attr('href') || '';
-        const title = cleanText(el.find('.text-secondary').text());
-        if (!href || !title) return;
-        const cover = absUrl(el.find('.w-full').attr('data-src'));
-        const remarks = cleanText(el.find('.left-1').text());
-        const duration = cleanText(el.find('.right-1').text());
-        const url = absUrl(href);
+    try {
+        const $ = cheerio.load(html);
+        $('.thumbnail').each((_, e) => {
+            const el = $(e);
+            const href = el.find('.text-secondary').attr('href') || '';
+            const title = cleanText(el.find('.text-secondary').text());
+            if (!href || !title) return;
+            const cover = absUrl(el.find('.w-full').attr('data-src'));
+            const remarks = cleanText(el.find('.left-1').text());
+            const duration = cleanText(el.find('.right-1').text());
+            const url = absUrl(href);
+            cards.push({
+                vod_id: url,
+                vod_name: title,
+                vod_pic: cover,
+                vod_remarks: [remarks, duration].filter(Boolean).join(' '),
+                ext: { id: url },
+            });
+        });
+    } catch (e) {}
+    if (cards.length) return cards;
+    return parseCardsRegex(html);
+}
+
+// 正则兜底：设备侧 cheerio 若失效/选不到，仍能从 thumbnail 块里抠出卡片。
+function parseCardsRegex(html) {
+    const cards = [];
+    const seen = new Set();
+    const blocks = String(html || '').split('<div class="thumbnail');
+    for (let i = 1; i < blocks.length; i++) {
+        const b = blocks[i];
+        const hrefM = b.match(/<a[^>]*href="(https:\/\/missav\.fans\/[^"]+)"[^>]*>/);
+        if (!hrefM) continue;
+        const url = hrefM[1];
+        if (seen.has(url)) continue;
+        seen.add(url);
+        const titleM = b.match(/<a[^>]*class="text-secondary[^"]*"[^>]*>([\s\S]*?)<\/a>/)
+            || b.match(/<img[^>]*alt="([^"]+)"[^>]*>/);
+        const title = titleM ? cleanText(titleM[1].replace(/<[^>]+>/g, ' ')) : '';
+        if (!title) continue;
+        const coverM = b.match(/<img[^>]*data-src="([^"]+cover[^"]*)"/)
+            || b.match(/<img[^>]*data-src="([^"]+)"/);
+        const remM = b.match(/bottom-1 left-1[^>]*>([^<]*)</);
+        const durM = b.match(/bottom-1 right-1[^>]*>([^<]*)</);
         cards.push({
             vod_id: url,
             vod_name: title,
-            vod_pic: cover,
-            vod_remarks: [remarks, duration].filter(Boolean).join(' '),
+            vod_pic: coverM ? absUrl(coverM[1]) : '',
+            vod_remarks: [remM ? cleanText(remM[1]) : '', durM ? cleanText(durM[1]) : ''].filter(Boolean).join(' '),
             ext: { id: url },
         });
-    });
+    }
     return cards;
 }
 
