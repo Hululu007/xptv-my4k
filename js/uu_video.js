@@ -36,7 +36,12 @@ const HOST = 'https://nfu.rftsln9.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // API 服务器列表（从站点 JS 逆向得到，逐字沿用猫版）
+// 2026-11-19 根因：XPTV 版漏了猫版首位的 https://utv2.cc（标准 443 端口），
+// 只剩 4 台 52000/51999 端口主机——DNS 回 198.18.168.x 基准段、VM 侧 3 台
+// 连不上、1 台 302 跳走，列表恒空。猫版正是靠 utv2.cc 首位取数才正常。
+// 现补回 utv2.cc 为首位，与猫版一致。
 const API_HOSTS = [
+    'https://utv2.cc',
     'https://aa3.aa36jn.com:52000',
     'https://zje.zje0cx.com:52000',
     'https://hlo.hlos8o.com:52000',
