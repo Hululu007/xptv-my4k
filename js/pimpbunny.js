@@ -355,6 +355,10 @@ function coverUrl(u) {
   return fixed;
 }
 
+// 2026-11-19 三腿取数：用户手机直连 pimpbunny.net/com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个非 Shield 页胜出。
+// 注意：点播铸令牌的梯子（fetchLadderDirect/remintLadder）必须直连现铸（令牌绑当次出口 IP + 会话 cookie），不走 Worker。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+
 // Bunny Shield 挑战页：1861 字节 "Establishing a secure connection"。
 function isShield(html) {
   if (!html || typeof html !== 'string') return true;
@@ -365,9 +369,21 @@ function isShield(html) {
 }
 
 async function getText(url, timeoutMs) {
+  const h = { 'User-Agent': UA, 'Referer': SITE + '/', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
+  try {
+    const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+    const txt = r && typeof r.data === 'string' ? r.data : (r && r.data ? JSON.stringify(r.data) : '');
+    if (r && r.status === 200 && txt && !isShield(txt)) return txt;
+  } catch (e) {}
+  try {
+    const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+    const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+    const txt = r && typeof r.data === 'string' ? r.data : (r && r.data ? JSON.stringify(r.data) : '');
+    if (r && r.status === 200 && txt && !isShield(txt)) return txt;
+  } catch (e) {}
   try {
     const r = await $fetch.get(url, {
-      headers: { 'User-Agent': UA, 'Referer': SITE + '/', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+      headers: h,
       timeout: timeoutMs || 20000,
       responseType: 'text',
       transformResponse: [(d) => d],

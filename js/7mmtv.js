@@ -14,6 +14,12 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const REFERER = HOST + '/zh/';
 const MMTV_WORKER = 'https://mmtv-vidhide.li768435813.workers.dev';
 
+// 2026-11-19 三腿取数：用户手机直连 7mmtv.sx 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 const CATS = [
   { type_id: 'list:censored', type_name: '有碼AV' },
   { type_id: 'list:reducing-mosaic', type_name: '無碼破解' },
@@ -45,7 +51,16 @@ function absUrl(u) {
 async function fetchText(url, referer) {
     const headers = { 'User-Agent': UA, 'Referer': referer || REFERER, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9' };
     try {
-        const { data, status } = await $fetch.get(url, { headers });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, headers, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const { data, status } = await $fetch.get(url, { headers: headers, timeout: 15000 });
         if ((status === undefined || status === 200) && data != null && data !== '') {
             return typeof data === 'string' ? data : JSON.stringify(data);
         }
@@ -57,10 +72,14 @@ async function getPage(url, referer) { return fetchText(url, referer); }
 async function postForm(url, params, referer) {
     const body = Object.keys(params).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k])).join('&');
     const headers = { 'User-Agent': UA, 'Referer': referer || REFERER, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8' };
-    try {
-        const { data, status } = await $fetch.post(url, body, { headers });
-        if ((status === undefined || status === 200) && typeof data === 'string' && data) return data;
-    } catch (e) {}
+    // 搜索表单 POST 也走两腿：site-fetch Worker 透传 → 直连（jina 不支持 POST）；Worker 腿无内容时回落直连。
+    const targets = [SITE_FETCH + '/?u=' + encodeURIComponent(url), url];
+    for (const target of targets) {
+        try {
+            const { data, status } = await $fetch.post(target, body, { headers: headers, timeout: 12000 });
+            if ((status === undefined || status === 200) && typeof data === 'string' && data) return data;
+        } catch (e) {}
+    }
     return '';
 }
 function parseCards(html) {

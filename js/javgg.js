@@ -1,7 +1,9 @@
 // JavGG - XPTV csp 格式（csp_javgg）
 // 转换自 mira-cat nodejs/src/spider/video/javgg.js（py_javgg）。站点 https://javgg.net（备用 https://javgg.co）。
-// 依赖 Worker：javgg-vidhide（https://javgg-vidhide.li768435813.workers.dev）—— vidhide 系全链代理，
-// getPlayinfo 返回 Worker /v 产出的 URL 原样直出（playForm=worker 主链之一）。
+// VidHide 链（2026-11-19 改设备侧直解）：hls2 token 绑取嵌页那次请求的 IP，
+// javgg-vidhide Worker 中转结构上已死（CF 出口被 hls2 CDN 切断，/v 回 502）。
+// getPlayinfo 直取嵌页 → 纯字符串解 Dean Edwards 包 → 取 hls2 master 直出
+// （hls3 备选，hls4 绝不用——TikTok 广告图诱饵）。playmate/vidara 仍优先直解。
 // $fetch.post 待真机验（本地 harness 已实测请求真能通）：playmate/vidara 的 POST JSON 逐字保持猫侧线格式。
 // 嗅探型播放降级：回源页 URL，待真机验 —— 猫版 parse:1 嗅探（vidhide 无 Worker 时 / f4 / other / 无线路时回详情页）
 // 在 XPTV 无嗅探位，降级为 urls:[embed/详情页 URL]。
@@ -12,7 +14,6 @@
 const SITE = 'https://javgg.net';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
-const VIDHIDE_WORKER = 'https://javgg-vidhide.li768435813.workers.dev';
 
 const CATS = [
   { type_id: 'latest', type_name: '最新', kind: 'path', url: '/new-post/' },
@@ -102,6 +103,80 @@ function b64urlDecode(s) {
 
 function clean(s) {
     return t(s).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&ndash;/g, '-').replace(/&mdash;/g, '-').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ');
+}
+
+// ---------- VidHide 设备侧直解（2026-11-19，替代已死的 javgg-vidhide Worker） ----------
+// hls2 master 的 token 绑取嵌页那次请求的 IP：Worker/jina 中转从结构上就是死的
+// （CF 出口被 hls2 CDN 在连接层切断，/v 回 502 "no playable play"）。
+// 只有播放器本机能解出可用地址：本机直取嵌页（token 绑本机 IP）→ 解包 →
+// 取 hls2 master 直出，播放器再以同一 IP 拉流，token 才有效。
+// 绝不用 hls4（站方播放器优先级虽列 hls4 在前，但它是 TikTok 广告图诱饵）。
+// 解包是 Worker v3 的纯字符串 Dean Edwards 解包（禁 eval/new Function，XPTV 可用）。
+function jsUnescapeSingle(s) {
+    return String(s || '').replace(/\\(.)/g, (m, c) => {
+        if (c === 'n') return '\n';
+        if (c === 'r') return '\r';
+        if (c === 't') return '\t';
+        return c;
+    });
+}
+function unpackDeanEdwards(html) {
+    const m = String(html || '').match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?\}\s*\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:[^'\\]|\\.)*)'\.split\('\|'\)/);
+    if (!m) return '';
+    let p = jsUnescapeSingle(m[1]);
+    const a = parseInt(m[2], 10);
+    const c = parseInt(m[3], 10);
+    const k = jsUnescapeSingle(m[4]).split('|');
+    const enc = (n) => (n < a ? '' : enc(Math.floor(n / a))) + ((n % a) > 35 ? String.fromCharCode((n % a) + 29) : (n % a).toString(36));
+    let i = c;
+    while (i--) {
+        if (k[i]) {
+            const word = k[i];
+            p = p.replace(new RegExp('\\b' + enc(i) + '\\b', 'g'), () => word);
+        }
+    }
+    return p;
+}
+function extractVidhideLinks(text) {
+    const links = {};
+    const src = String(text || '');
+    let m;
+    const re = /"hls(\d+)"\s*:\s*"([^"]+)"/g;
+    while ((m = re.exec(src)) !== null) links['hls' + m[1]] = m[2];
+    if (!Object.keys(links).length) {
+        const f = src.match(/"file"\s*:\s*"(https?:[^"]+\.m3u8[^"]*)"/) || src.match(/(https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*)/);
+        if (f) links.hls2 = f[1];
+    }
+    return links;
+}
+function absFrom(u, base) {
+    u = t(u);
+    if (!u) return '';
+    if (/^https?:\/\//i.test(u)) return u;
+    if (u.startsWith('//')) return 'https:' + u;
+    const o = String(base || '').match(/^(https?:\/\/[^\/]+)/i);
+    if (u.startsWith('/')) return (o ? o[1] : '') + u;
+    return (o ? o[1] + '/' : '') + u;
+}
+async function resolveVidhide(embedUrl, referer) {
+    // 必须直取嵌页（不能走 site-fetch/Worker 中转，否则 token 绑到中转 IP 上，
+    // 播放器本机拿该 token 拉流必被 CDN 拒绝）
+    let html = '';
+    try {
+        const { data, status } = await $fetch.get(embedUrl, { headers: { 'User-Agent': UA, 'Referer': referer || REFERER, 'Accept': '*/*' } });
+        if (status === 200 && data) html = typeof data === 'string' ? data : '';
+    } catch (e) { return ''; }
+    if (!html) return '';
+    const unpacked = unpackDeanEdwards(html);
+    const links = extractVidhideLinks(unpacked || html);
+    // hls2 优先，hls3 备选；hls4 绝不用
+    for (const key of ['hls2', 'hls3']) {
+        const raw = links[key];
+        if (!raw) continue;
+        const abs = absFrom(raw, embedUrl);
+        if (/\.m3u8/i.test(abs)) return abs;
+    }
+    return '';
 }
 function fixUrl(u) {
     u = t(u);
@@ -304,9 +379,11 @@ async function getPlayinfo(ext) {
         const src = e.kind === 'playmate' ? await tryPlaymate(e.embedUrl) : await tryVidara(e.embedUrl);
         if (src) return jsonify({ urls: [src], headers: hdrFor(durl) });
     }
+    // VidHide：设备侧直解 hls2 master（token 绑本机 IP；Worker 中转已死，不再用）
     const vh = embeds.find(e => e.kind === 'vidhide');
-    if (VIDHIDE_WORKER && vh) {
-        return jsonify({ urls: [VIDHIDE_WORKER + '/v?u=' + encodeURIComponent(vh.embedUrl) + '&r=' + encodeURIComponent(durl)], headers: hdrFor(durl) });
+    if (vh) {
+        const src = await resolveVidhide(vh.embedUrl, durl);
+        if (src) return jsonify({ urls: [src], headers: hdrFor(vh.embedUrl) });
     }
     // 解析失败返回空：嵌页/详情页地址不是可播流，交给播放器只会转圈
     return jsonify({ urls: [], headers: [] });

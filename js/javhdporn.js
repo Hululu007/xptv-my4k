@@ -44,6 +44,11 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const REFERER = HOST + '/';
 // 自有取页跳板 pornfhd-fetch (用户自有 Cloudflare Worker, 第一通道)
 const OWN_FETCH = 'https://pornfhd-fetch.li768435813.workers.dev';
+// 通用取数中转 site-fetch (用户自有 Cloudflare Worker v6, 白名单含
+// www.javhdporn.net；2026-11-19 加：站方 CF 墙间歇性拦 VM/CF 出口，
+// 多一个边缘出口多一路；注意站方 CF 挑战时 Worker 也拿不到正文，
+// 该腿失败即落到下一腿，不阻塞直连通路）
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 
 // 分类: 照猫版 CATS (2026-10-21 逐类实测站方计数, 2026-10-22 复核 slug 未变)
 const CATS = [
@@ -300,12 +305,18 @@ async function chCodetabs(url) {
   return dataText(r.data);
 }
 
-// 串行取页: own (自有 Worker) -> 直连 -> jina -> aoGet -> codetabs,
+async function chSiteFetch(url) {
+  const r = await sfGet(SITE_FETCH + '/?u=' + encodeURIComponent(url), { 'User-Agent': UA });
+  return dataText(r.data);
+}
+
+// 串行取页: own (自有 Worker) -> 直连 -> site-fetch -> jina -> aoGet -> codetabs,
 // 第一个通过解析型校验的正文胜出; 全灭回空串。
 async function fetchPage(url, kind) {
   const channels = [
     () => chOwn(url),
     () => chDirect(url),
+    () => chSiteFetch(url),
     () => chJina(url),
     () => chAoGet(url),
     () => chCodetabs(url),
@@ -585,6 +596,7 @@ async function fetchEmbedPage(url, referer) {
   const hdrs = { ...BROWSER_HEADERS, Referer: referer || REFERER };
   const channels = [
     ['direct', async () => dataText((await sfGet(url, hdrs)).data)],
+    ['sitefetch', async () => chSiteFetch(url)],
     ['own', async () => chOwn(url)],
     ['jina', async () => chJina(url)],
     ['aoGet', async () => chAoGet(url)],

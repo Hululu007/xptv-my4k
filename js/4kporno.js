@@ -5,7 +5,12 @@
 // 地址 + 详情页会话 cookie（PHPSESSID 等）交给播放器，不用详情时 mint 的老 token；
 // 顶级分类 4 个（最新/最热/评分最高/全部类别），361 个真实分类在 XPTV 里只用 tabs、默认取首项；
 // 字幕不接（欧美站无番号）。
+// 2026-11-19 取数加 site-fetch Worker 腿兜底（直连→Worker）：VM 侧全通但设备侧无轨，
+// 详情页取数失败是无轨根因。注意 VM 侧 harness 播单验真会报 403 Wrong IP——那是 VM
+// 出口 IPv6 每连接轮换、fpvcdn 跟随跳转时 IP 对不上所致，设备侧 IP 稳定不受影响；
+// get_file 直取（node/curl）实测 302 到 fpvcdn mp4，链路本身是通的。
 const HOST = 'https://www.4kporno.xxx';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const PAGE_SIZE = 24;
 const SEARCH_SIZE = 24;
@@ -64,14 +69,25 @@ function headers(referer) {
     };
 }
 
+// 取页：直连优先（列表在设备上直连是通的；详情 <source> 的 token 绑
+// 请求方 IP，直连才能给设备铸出可用 token）→ 直连空/失败时走自家
+// site-fetch Worker 腿兜底（白名单含 www.4kporno.xxx）。注意：经 Worker
+// 取到的 <source> token 绑 Worker IP，getPlayinfo 点播时仍会直连重取，
+// 所以这里的 Worker 腿只用来“拿到详情页、解析出档位”，不影响播放。
 async function getHtml(url, referer) {
     try {
         const r = await $fetch.get(url, { headers: headers(referer) });
         const data = r && r.data;
-        return typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
-    } catch (e) {
-        return '';
-    }
+        const t = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
+        if (t && t.length > 2000) return t;
+    } catch (e) {}
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(referer), timeout: 15000 });
+        const data = r && r.data;
+        const t = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
+        if (t && t.length > 2000) return t;
+    } catch (e) {}
+    return '';
 }
 
 // 取页 + set-cookie（详情页会话：PHPSESSID 等；播放地址须带同会话 cookie，
@@ -82,19 +98,28 @@ async function getPage(url, referer) {
         const r = await $fetch.get(url, { headers: headers(referer) });
         const data = r && r.data;
         const html = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
-        let cookies = [];
-        if (r && r.headers) {
-            const sc = r.headers['set-cookie'] || r.headers['Set-Cookie'];
-            if (Array.isArray(sc)) cookies = sc;
-            else if (typeof sc === 'string' && sc) cookies = [sc];
-            else if (typeof r.headers.getSetCookie === 'function') {
-                try { cookies = r.headers.getSetCookie(); } catch (e) {}
+        if (html && html.length > 2000) {
+            let cookies = [];
+            if (r && r.headers) {
+                const sc = r.headers['set-cookie'] || r.headers['Set-Cookie'];
+                if (Array.isArray(sc)) cookies = sc;
+                else if (typeof sc === 'string' && sc) cookies = [sc];
+                else if (typeof r.headers.getSetCookie === 'function') {
+                    try { cookies = r.headers.getSetCookie(); } catch (e) {}
+                }
             }
+            return { html, cookies };
         }
-        return { html, cookies };
-    } catch (e) {
-        return { html: '', cookies: [] };
-    }
+    } catch (e) {}
+    // 直连拿不到详情页时走 site-fetch 腿兜底（无 cookie 也能播，见验证：
+    // get_file 直取不带 cookie 也 302 到 fpvcdn；token 由本次重取现铸）。
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(referer), timeout: 15000 });
+        const data = r && r.data;
+        const html = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
+        if (html && html.length > 2000) return { html, cookies: [] };
+    } catch (e) {}
+    return { html: '', cookies: [] };
 }
 
 function cookieHeader(cookies) {

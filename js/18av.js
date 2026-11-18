@@ -133,7 +133,11 @@ function parsePosts(html) {
         const pm = c.match(/<img[^>]+src=['"](https?:\/\/[^'"]+)['"]/i);
         const pic = pm ? pm[1] : '';
         const dm = c.match(/<div class=['"]meta['"]>([^<]*)<\/div>/i);
-        out.push({ vod_id: href, vod_name: title, vod_pic: pic, vod_remarks: dm ? t(dm[1]) : '' });
+        out.push({ vod_id: href, vod_name: title, vod_pic: pic, vod_remarks: dm ? t(dm[1]) : '',
+            // 卡片必须带 ext.id：XPTV 把 card.ext 传给 getTracks，缺 ext 时
+            // 设备侧 getTracks 收不到 id、0 轨（2026-11-19 根因，harness 会
+            // 用 vod_id 兜底所以 VM 侧看不出来）。
+            ext: { id: href } });
     }
     return out;
 }

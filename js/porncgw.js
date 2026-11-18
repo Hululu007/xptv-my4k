@@ -10,6 +10,12 @@ const HOST = 'https://porncgw.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const IMG_PROXY = 'https://bagua-img-proxy.li768435813.workers.dev/img?url=';
 
+// 2026-11-19 三腿取数：用户手机直连 porncgw.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 // 站内导航 21 个分类（同猫版）；最新更新 = 首页无服务端分页，只出第一页
 const CATS = [
     { type_id: 'latest', type_name: '最新更新', path: '/' },
@@ -62,8 +68,18 @@ function headers(referer) {
 }
 
 async function getHtml(url, referer) {
+    const h = headers(referer);
     try {
-        const { data } = await $fetch.get(url, { headers: headers(referer) });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const { data } = await $fetch.get(url, { headers: h, timeout: 15000 });
         if (typeof data === 'string' && data) return data;
         if (data) return String(data);
     } catch (e) {}
@@ -240,17 +256,20 @@ async function getPlayinfo(ext) {
     if (dm) apiUrl = HOST + '/api/videos/' + dm[1] + '/episodes/' + dm[2] + '/playback';
     else if (vm) apiUrl = HOST + '/api/videos/' + vm[1] + '/playback';
     if (apiUrl) {
-        try {
-            const { data } = await $fetch.post(apiUrl, '{}', {
-                headers: { 'Content-Type': 'application/json', 'User-Agent': UA, 'Referer': pageUrl, 'Accept': 'application/json' },
-            });
-            let d = data;
-            if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
-            const main = d && d.data && d.data.streams && d.data.streams.main;
-            if (main && /^https?:\/\//i.test(main)) {
-                return jsonify({ urls: [String(main)], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
-            }
-        } catch (e) {}
+        // 播放 API 也走两腿：site-fetch Worker 透传 → 直连（jina 不支持 POST）；Worker 腿无流时回落直连。
+        const postHeads = { 'Content-Type': 'application/json', 'User-Agent': UA, 'Referer': pageUrl, 'Accept': 'application/json' };
+        const targets = [SITE_FETCH + '/?u=' + encodeURIComponent(apiUrl), apiUrl];
+        for (const target of targets) {
+            try {
+                const { data } = await $fetch.post(target, '{}', { headers: postHeads, timeout: 12000 });
+                let d = data;
+                if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+                const main = d && d.data && d.data.streams && d.data.streams.main;
+                if (main && /^https?:\/\//i.test(main)) {
+                    return jsonify({ urls: [String(main)], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
+                }
+            } catch (e) {}
+        }
     }
     return jsonify({ urls: [], headers: [] });
 }

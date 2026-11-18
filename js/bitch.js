@@ -4,6 +4,19 @@
 const API_BASE = 'http://api.maiyoux.com:81/mf/';
 const UA = 'Mozilla/5.0 (Linux; Android 4.4.2; OPPO R11 Build/NMF26X) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/30.0.0.0 Mobile Safari/537.36';
 
+// 2026-11-19 三腿取 JSON：用户手机直连 api.maiyoux.com:81 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个可解析 JSON 胜出。
+// 注意：api.maiyoux.com 尚未进 site-fetch v6 白名单（实测 Worker 回 400 bad u），Worker 腿目前直通失败、
+// 实际生效的是 jina 腿与直连腿；需把 api.maiyoux.com 加进 Worker 白名单并重部署后，Worker 腿才生效。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function parseJsonLoose(data) {
+    const s = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+    if (!s) return null;
+    try { const j = JSON.parse(s); return (j && typeof j === 'object') ? j : null; } catch (e) {}
+    const a = s.indexOf('{'); const b = s.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { const j = JSON.parse(s.slice(a, b + 1)); return (j && typeof j === 'object') ? j : null; } catch (e2) {} }
+    return null;
+}
+
 const appConfig = {
     ver: 1,
     title: 'Bitch Lives',
@@ -146,8 +159,18 @@ const appConfig = {
 };
 
 async function getJson(url) {
+    const h = { 'User-Agent': UA, 'Content-Type': 'application/octet-stream' };
     try {
-        const r = await $fetch.get(url, { headers: { 'User-Agent': UA, 'Content-Type': 'application/octet-stream' } });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200) { const j = parseJsonLoose(r.data); if (j) return j; }
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'text' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200) { const j = parseJsonLoose(r.data); if (j) return j; }
+    } catch (e) {}
+    try {
+        const r = await $fetch.get(url, { headers: h, timeout: 15000 });
         const data = r ? r.data : null;
         if (typeof data === 'string') {
             const s = data.trim();

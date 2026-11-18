@@ -8,6 +8,31 @@
 const HOST = 'https://www.0817hyjx.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
+// 2026-11-19 三腿取数：用户手机直连 www.0817hyjx.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
+// 三腿取原文（不解混淆壳，解壳由 getHtml 做）。
+async function fetchRaw(url) {
+    const h = { 'User-Agent': UA, 'Referer': HOST + '/cn', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' };
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const r = await $fetch.get(url, { headers: h, timeout: 15000 });
+        if (r && r.status && r.status !== 200) return '';
+        return r && typeof r.data === 'string' ? r.data : '';
+    } catch (e) { return ''; }
+}
+
 function unescapeHtml(s) {
     return String(s || '')
         .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -80,31 +105,25 @@ async function getHtml(url) {
     let full = String(url || '');
     if (full.indexOf('//') === 0) full = 'https:' + full;
     else if (full.charAt(0) === '/') full = HOST + full;
-    try {
-        const r = await $fetch.get(full, {
-            headers: { 'User-Agent': UA, 'Referer': HOST + '/cn', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' },
-            timeout: 20000,
-        });
-        if (r && r.status && r.status !== 200) return '';
-        const raw = r && typeof r.data === 'string' ? r.data : '';
-        // 站方 xsg-base64-v2 混淆壳：壳里只有一段长 base64，解开即真实页面；
-        // 解不开或解开后无卡片时回落原文。
-        if (raw.indexOf('data-xsg-obfuscation') >= 0) {
-            try {
-                const cands = raw.match(/"([A-Za-z0-9+/=]{1000,})"/g) || [];
-                let best = '';
-                for (let i = 0; i < cands.length; i++) {
-                    const inner = cands[i].slice(1, -1);
-                    if (inner.length > best.length) best = inner;
-                }
-                if (best) {
-                    const decoded = utf8decode(b64decode(best));
-                    if (decoded.indexOf('<article') >= 0) return decoded;
-                }
-            } catch (e) { /* fall through */ }
-        }
-        return raw;
-    } catch (e) { return ''; }
+    const raw = await fetchRaw(full);
+    if (!raw) return '';
+    // 站方 xsg-base64-v2 混淆壳：壳里只有一段长 base64，解开即真实页面；
+    // 解不开或解开后无卡片时回落原文。
+    if (raw.indexOf('data-xsg-obfuscation') >= 0) {
+        try {
+            const cands = raw.match(/"([A-Za-z0-9+/=]{1000,})"/g) || [];
+            let best = '';
+            for (let i = 0; i < cands.length; i++) {
+                const inner = cands[i].slice(1, -1);
+                if (inner.length > best.length) best = inner;
+            }
+            if (best) {
+                const decoded = utf8decode(b64decode(best));
+                if (decoded.indexOf('<article') >= 0) return decoded;
+            }
+        } catch (e) { /* fall through */ }
+    }
+    return raw;
 }
 
 function parseCards(html) {

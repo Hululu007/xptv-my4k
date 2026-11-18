@@ -14,6 +14,7 @@
 // 签名 master 的 token 绑 ASN/IP，当前出口不匹配时 master 照样 403，设备单出口 IP 上可能正常，照常返回真流地址。
 // 带字幕（有番号）。
 const HOST = 'https://openload.mov';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
 function headers(referer) {
@@ -52,6 +53,11 @@ async function getHtml(url, referer) {
             if (r && r.status === 200 && r.data) return String(r.data);
         } catch (e) {}
     }
+    // 直连三试皆空时走自家 site-fetch Worker 腿兜底（白名单含 openload.mov）。
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(referer), timeout: 15000 });
+        if (r && r.status === 200 && r.data) return String(r.data);
+    } catch (e) {}
     return '';
 }
 
@@ -79,7 +85,25 @@ async function fetchEmbed(url, referer) {
             }
         } catch (e) {}
     }
+    // 直连三试无果时走 site-fetch 腿（mixdrop.co 除外：该域 DNS 已死，
+    // Worker 也解析不出，见 normEmbed 的域名迁移）。
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(referer), timeout: 12000 });
+        if (r && r.status === 200 && r.data) return { status: 200, body: String(r.data) };
+        if (r && r.status === 404) return { status: 404, body: '' };
+    } catch (e) {}
     return { status: lastStatus, body: lastBody };
+}
+
+// mixdrop 域名已迁移：mixdrop.co DNS 解析失败（2026-11-19 实测 jina 报
+// EAI_AGAIN、直连 000），现行域为 mixdrop.ag（302 到 mxdrop.click）。
+// 嵌页地址统一改写到活域；mixdrop 播放器为 JS 驱动、静态取页拿不到直链，
+// 仅 mixdrop 的视频仍解不出（见 resolveEmbed 的 mixdrop 分支说明）。
+function normEmbed(u) {
+    let s = String(u || '').trim();
+    if (!s) return s;
+    s = s.replace(/^https?:\/\/mixdrop\.co\//i, 'https://mixdrop.ag/');
+    return s;
 }
 
 async function getRest(url) {
@@ -153,7 +177,7 @@ function unpackDetailEmbeds(html) {
             const out = [];
             const ire = /<iframe[^>]*src="([^"]+)"/g;
             let im;
-            while ((im = ire.exec(up)) !== null) out.push(im[1]);
+            while ((im = ire.exec(up)) !== null) out.push(normEmbed(im[1]));
             if (out.length) return out;
         }
     }
@@ -303,6 +327,29 @@ function isDirectMedia(u) {
     return u.indexOf('.m3u8') >= 0 || u.indexOf('/get_video?') >= 0 || /\.mp4(\?|#|$)/.test(u);
 }
 
+function isMixdrop(h) {
+    return h === 'mixdrop.co' || h === 'mixdrop.ag' || h === 'mxdrop.click' || h.endsWith('.mixdrop.co') || h.endsWith('.mixdrop.ag') || h.endsWith('.mxdrop.click');
+}
+
+// mixdrop：播放器为 JS 驱动（MDCore.wurl 由 player JS 动态取），静态取页
+// 通常拿不到直链；只做保守尝试——页内若出现 mixdrop/mxdrop 域的直链
+// mp4/m3u8（或 wurl 值）就取用，否则回 '' 走 sniff（getPlayinfo 回空，
+// 绝不把嵌页地址当播放地址）。实测样本 op-510638 的两个 mixdrop 文件均
+// 已删（mxdrop.click 回 "We can't find the video"），该片本就播不了。
+async function resolveMixdrop(embed) {
+    const f = await fetchEmbed(embed, embed);
+    const html = f.body || '';
+    if (!html) return '';
+    if (/we can't find the video|video (has been )?deleted|no longer available/i.test(html)) return 'DEAD';
+    const m = html.match(/["'](https?:\/\/[a-z0-9-]+\.(?:mxdrop\.click|mixdrop\.ag|mixdrop\.co)\/[^"']+\.(?:mp4|m3u8)[^"']*)["']/i)
+        || html.match(/wurl\s*=\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)[^"']*)["']/i);
+    if (m && m[1]) {
+        const u = m[1];
+        return u.indexOf('.m3u8') >= 0 ? { kind: 'hls', url: u } : { kind: 'mp4', url: u };
+    }
+    return '';
+}
+
 async function resolveEmbed(embed) {
     const h = hostOf(embed);
     if (!h) return { kind: 'sniff', url: embed };
@@ -314,6 +361,10 @@ async function resolveEmbed(embed) {
         const u = await resolveStreamtape(embed);
         if (u === 'DEAD') return { kind: 'dead', url: embed };
         if (u) return { kind: 'mp4', url: u };
+    } else if (isMixdrop(h)) {
+        const r = await resolveMixdrop(embed);
+        if (r === 'DEAD') return { kind: 'dead', url: embed };
+        if (r) return r;
     }
     return { kind: 'sniff', url: embed };
 }
@@ -413,6 +464,10 @@ function parseList(html) {
             vod_name: title,
             vod_pic: m[2] || '',
             vod_remarks: t(m[5] || ''),
+            // 卡片必须带 ext.id：XPTV 把 card.ext 传给 getTracks，缺 ext 时
+            // 设备侧 getTracks 收不到 id、0 轨（2026-11-19 根因，harness 会
+            // 用 vod_id 兜底所以 VM 侧看不出来）。
+            ext: { id: url },
         });
     }
     return list;
@@ -999,6 +1054,8 @@ async function search(ext) {
         vod_name: escHtml((p.title && p.title.rendered) || ''),
         vod_pic: '',
         vod_remarks: (p.date || '').slice(0, 10),
+        // 卡片必须带 ext.id（同上）。
+        ext: { id: p.link || '' },
     })).filter((v) => v.vod_id && v.vod_name);
     const thumbJobs = list.slice(0, 8);
     let thumbIdx = 0;

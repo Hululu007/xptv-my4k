@@ -14,6 +14,11 @@ const SITE = HOSTS[0];
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
 const SEXTB_WORKER = 'https://sextb-hls.li768435813.workers.dev';
+// 2026-11-19 取数腿：站方 CF 拦程序化直连（VM 与设备均拿不到正文）、jina 匿名
+// 配额已耗尽（401 bad IP reputation），改走自家 site-fetch Worker 优先
+// （2026-11-19 实测：SF 取首页 200/244KB，parseCards 得 75 卡 75 封面）。
+// 三腿：site-fetch → 直连 → jina，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 
 const CATS = [
   { type_id: 'latest', type_name: '最新' },
@@ -102,6 +107,33 @@ async function rawGet(url, headers) {
     } catch (e) {}
     return '';
 }
+// /ajax/player 会话：__pt 绑 PHP 会话（缺 Cookie 回 E_SID，缺 pt 回 E_TOK_LEN）。
+// 详情页经 site-fetch 取回时 Worker 以 x-set-cookie 带回 PHPSESSID，存下来，
+// POST 时一并带上（经 site-fetch 转发，Worker 代传给站方，同一会话）。
+let SEXTB_SESSION = '';
+function storeSessionCookie(headers) {
+    try {
+        const h = headers || {};
+        const raw = h['x-set-cookie'] || h['X-Set-Cookie'] || h['set-cookie'] || h['Set-Cookie'] || '';
+        const list = Array.isArray(raw) ? raw : [String(raw)];
+        for (const item of list) {
+            const m = String(item).match(/(?:^|;\s*)(PHPSESSID=[^;]+)/);
+            if (m) { SEXTB_SESSION = m[1]; return; }
+        }
+    } catch (e) {}
+}
+async function fetchViaSiteFetch(url) {
+    try {
+        const { data, status, headers } = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: pageHeaders(REFERER), timeout: 15000 });
+        if ((status === undefined || status === 200) && typeof data === 'string' && !isBlockedPage(data)) {
+            if (data.includes('tray-item') || data.length > 5000) {
+                storeSessionCookie(headers);
+                return data;
+            }
+        }
+    } catch (e) {}
+    return '';
+}
 async function fetchViaJina(host, path) {
     const jinaUrl = 'https://r.jina.ai/' + host + path;
     const headers = { 'User-Agent': UA, 'x-respond-with': 'html' };
@@ -120,6 +152,9 @@ async function getHtml(url, extraHeaders) {
         return rawGet(url, pageHeaders(m ? 'https://' + host + '/' : REFERER, extraHeaders));
     }
     const path = pathOf(url);
+    // ① 自家 site-fetch 中转（首选，实测通）
+    const sf = await fetchViaSiteFetch(url);
+    if (sf) return sf;
     const hosts = hostOrder(url);
     for (const h of hosts) {
         const html = await rawGet(h + path, pageHeaders(h + '/', extraHeaders));
@@ -134,11 +169,63 @@ async function getHtml(url, extraHeaders) {
 function formEncode(obj) {
     return Object.keys(obj).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(obj[k])).join('&');
 }
+// ---- /ajax/player：站方现行协议（2026-11-19 对照站方 /js/sextb.js 查实） ----
+//   详情页内联：window.__pt / window.__pk（每页现值）；
+//   POST /ajax/player {episode, filmId, pt: __pt}；
+//   回 {player_enc: base64(XOR(playerHtml, __pk)), next_pt, next_pk}，
+//   下一次调用须用 next_pt/next_pk（每调轮换）；缺 pt 回 E_TOK_LEN。
+//   旧代码只发 {episode, filmId}、只认明文 json.player，故一直拿不到嵌页。
+//   纯 JS base64 解码 + XOR，不依赖 atob/Buffer（XPTV 运行时无 Buffer）。
+const B64CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function b64ToBytes(s) {
+    const clean = String(s || '').replace(/[^A-Za-z0-9+/=]/g, '');
+    const out = [];
+    let i = 0;
+    while (i < clean.length) {
+        const c0 = B64CHARS.indexOf(clean.charAt(i++));
+        const c1 = B64CHARS.indexOf(clean.charAt(i++));
+        const c2 = B64CHARS.indexOf(clean.charAt(i++));
+        const c3 = B64CHARS.indexOf(clean.charAt(i++));
+        if (c0 < 0 || c1 < 0) break;
+        out.push((c0 << 2) | (c1 >> 4));
+        if (c2 >= 0) out.push(((c1 & 15) << 4) | (c2 >> 2));
+        if (c3 >= 0) out.push(((c2 & 3) << 6) | c3);
+    }
+    return out;
+}
+function xorDecrypt(encoded, key) {
+    if (!encoded || !key) return '';
+    const bytes = b64ToBytes(encoded);
+    if (!bytes.length) return '';
+    let result = '';
+    for (let i = 0; i < bytes.length; i++) {
+        result += String.fromCharCode(bytes[i] ^ key.charCodeAt(i % key.length));
+    }
+    return result;
+}
+function extractPtPk(html) {
+    const pt = (String(html || '').match(/window\.__pt\s*=\s*"([^"]+)"/) || [])[1] || '';
+    const pk = (String(html || '').match(/window\.__pk\s*=\s*"([^"]+)"/) || [])[1] || '';
+    return { pt, pk };
+}
 async function postJsonFast(durl, body) {
     let ajaxUrl = '';
     try { ajaxUrl = new URL(durl).origin + '/ajax/player'; } catch (e) { return ''; }
     const data = formEncode(body);
     const headers = { 'User-Agent': UA, 'Referer': durl, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json, text/javascript, */*; q=0.01', 'X-Requested-With': 'XMLHttpRequest' };
+    if (SEXTB_SESSION) headers['Cookie'] = SEXTB_SESSION;
+    // ① 经 site-fetch 转发（Worker 代传 Cookie 给站方，同一会话；VM 直连被 CF 拦、设备侧也未必通）
+    try {
+        const { data: res, status, headers: rh } = await $fetch.post(SITE_FETCH + '/?u=' + encodeURIComponent(ajaxUrl), data, { headers });
+        if (rh) storeSessionCookie(rh);
+        if ((status === undefined || status === 200) && res != null) {
+            const s = typeof res === 'string' ? res : JSON.stringify(res);
+            // 成功回包带 player_enc；Forbidden（E_TOK_LEN/E_SID 等）不回，落到直连再试
+            if (s && /player_enc/.test(s)) return s;
+            if (s && !/Your request was blocked/i.test(s) && !/"error"/.test(s)) return s;
+        }
+    } catch (e) {}
+    // ② 直连（设备侧可能通；VM 侧被 CF 拦）
     try {
         const { data: res, status } = await $fetch.post(ajaxUrl, data, { headers });
         if ((status === undefined || status === 200) && res != null) {
@@ -225,7 +312,7 @@ function codeOf(u) {
 function workerVUrl(embedUrl, durl) { return SEXTB_WORKER ? SEXTB_WORKER + '/v?u=' + encodeURIComponent(embedUrl) + '&r=' + encodeURIComponent(durl) : ''; }
 function workerF4Url(embedUrl, durl) { return SEXTB_WORKER ? SEXTB_WORKER + '/f4?u=' + encodeURIComponent(embedUrl) + '&r=' + encodeURIComponent(durl) : ''; }
 function isF4HostName(host) { return /f4scdn\.com|f4jav\.xyz/.test(host || ''); }
-function isSwHostName(host) { return /hglink\.to|streamhg|trailerhg|earnvid|vidhide/.test(host || ''); }
+function isSwHostName(host) { return /hglink\.to|streamhg|trailerhg|earnvid|vidhide|ryderjet/.test(host || ''); }
 
 async function decodeStreamHgLinks(embedUrl, durl) {
     const host = hostOf(embedUrl);
@@ -245,7 +332,9 @@ async function decodeStreamHgLinks(embedUrl, durl) {
 async function resolveStreamHgInSpider(embedUrl, durl, withProbe) {
     const links = await decodeStreamHgLinks(embedUrl, durl);
     const heads = { 'User-Agent': UA };
-    for (const key of ['hls3', 'hls4', 'hls2']) {
+    // 2026-11-19：hls2 为真流（签名 master，token 绑取嵌页 IP，设备侧直解直取才通），
+    // hls3 现回 404（已死，仅作备选）；hls4 是 TikTok 广告图诱饵，绝不取。
+    for (const key of ['hls2', 'hls3']) {
         const u = links[key];
         if (!u || !/^https?:\/\//.test(u)) continue;
         if (withProbe && !(await probePlaylist(u, heads))) continue;
@@ -323,12 +412,23 @@ async function resolveEmbed(embedUrl, durl) {
     if (/dood|d000d|do7go|playmogo/.test(host)) return resolveDood(embedUrl);
     return resolveGeneric(embedUrl, durl);
 }
-async function ajaxEmbed(durl, ep, filmId) {
-    const resp = await postJsonFast(durl, { episode: ep.episode, filmId });
+async function ajaxEmbed(durl, ep, filmId, ptPk) {
+    const body = { episode: ep.episode, filmId };
+    if (ptPk && ptPk.pt) body.pt = ptPk.pt;
+    const resp = await postJsonFast(durl, body);
     if (!resp) return '';
     try {
         const json = JSON.parse(resp);
-        const playerHtml = t(json.player);
+        if (json.error) return '';
+        // 先用本次的 pk 解 player_enc（它是用本次 pk 加密的），再轮换
+        // 成 next_pt/next_pk 供下一次调用；顺序反了会解出乱码、拿不到嵌页。
+        let playerHtml = '';
+        if (json.player_enc && ptPk && ptPk.pk) playerHtml = xorDecrypt(json.player_enc, ptPk.pk);
+        if (!playerHtml) playerHtml = t(json.player);
+        if (ptPk) {
+            if (json.next_pt) ptPk.pt = json.next_pt;
+            if (json.next_pk) ptPk.pk = json.next_pk;
+        }
         const em = playerHtml.match(/<iframe[^>]+src="(https?:\/\/[^"]+)"/) || playerHtml.match(/<iframe[^>]+src="(\/\/[^"]+)"/);
         if (em) return fixUrl(em[1]);
     } catch (e) {}
@@ -448,22 +548,26 @@ async function getPlayinfo(ext) {
     if (!html) return jsonify({ urls: [], headers: [] });
     const defEmbed = extractDefaultEmbed(html);
     const { filmId, episodes } = extractPlayerInfo(html);
+    // /ajax/player 须带本页 __pt（缺了回 E_TOK_LEN），回包是 XOR 加密的 player_enc
+    const ptPk = extractPtPk(html);
     const deadline = Date.now() + 30000;
     let firstEmbed = defEmbed || '';
     let swLastResort = '';
     if (defEmbed) {
         const dhost = hostOf(defEmbed);
         if (isF4HostName(dhost)) {
+            // Worker /f4 已死（上游 403，/f4 回 502）：先探活，死的不回
+            // （回死地址播放器只会转圈），落到后面的线路循环找 SW 等线。
             const w = workerF4Url(defEmbed, durl);
-            if (w) return jsonify({ urls: [w], headers: uaHead });
+            if (w && await probePlaylist(w, { 'User-Agent': UA })) return jsonify({ urls: [w], headers: uaHead });
         } else if (isSwHostName(dhost)) {
+            // Worker /v 已死（上游 403 拦 CF 出口，/v 回 502）：探活失败时
+            // 不再直接放弃，改走设备侧直解（嵌页直取 + 解包取 hls2，token 绑
+            // 设备本机 IP，设备侧直取才通；VM 侧探活必 403，只看结构）。
             const w = workerVUrl(defEmbed, durl);
-            if (w) {
-                if (await probePlaylist(w, { 'User-Agent': UA })) return jsonify({ urls: [w], headers: uaHead });
-            } else {
-                const r = await resolveStreamHgInSpider(defEmbed, durl, true);
-                if (r) return jsonify(r);
-            }
+            if (w && await probePlaylist(w, { 'User-Agent': UA })) return jsonify({ urls: [w], headers: uaHead });
+            const r = await resolveStreamHgInSpider(defEmbed, durl, true);
+            if (r) return jsonify(r);
         } else {
             try { const r = await resolveEmbed(defEmbed, durl); if (r && r.urls && r.urls.length) return jsonify(r); } catch (e) {}
         }
@@ -484,22 +588,26 @@ async function getPlayinfo(ext) {
         if (defEmbed && episodes.length && ep.episode === episodes[0].episode) continue;
         if (!filmId) break;
         borrowed++;
-        const embed = await ajaxEmbed(durl, ep, filmId);
+        const embed = await ajaxEmbed(durl, ep, filmId, ptPk);
         if (!embed) continue;
         if (!firstEmbed) firstEmbed = embed;
         const host = hostOf(embed);
         try {
             if (isF4HostName(host)) {
                 const w = workerF4Url(embed, durl);
-                if (w) return jsonify({ urls: [w], headers: uaHead });
+                if (w && await probePlaylist(w, { 'User-Agent': UA })) return jsonify({ urls: [w], headers: uaHead });
                 continue;
             }
             if (isSwHostName(host)) {
                 const w = workerVUrl(embed, durl);
                 if (w && await probePlaylist(w, { 'User-Agent': UA })) return jsonify({ urls: [w], headers: uaHead });
+                // Worker /v 死时走设备侧直解（探活过的 hls2 才收）；只在直解
+                // 也失败时才把 hls2 当最后兜底（不探活，VM 侧探活必 403）。
                 if (!swLastResort) {
+                    const r = await resolveStreamHgInSpider(embed, durl, true);
+                    if (r && r.urls && r.urls.length) return jsonify(r);
                     const links = await decodeStreamHgLinks(embed, durl);
-                    if (links.hls3) swLastResort = links.hls3;
+                    if (links.hls2) swLastResort = links.hls2;
                 }
                 continue;
             }
@@ -509,7 +617,7 @@ async function getPlayinfo(ext) {
     }
     if (!swLastResort && defEmbed && isSwHostName(hostOf(defEmbed))) {
         const links = await decodeStreamHgLinks(defEmbed, durl);
-        if (links.hls3) swLastResort = links.hls3;
+        if (links.hls2) swLastResort = links.hls2;
     }
     if (swLastResort) return jsonify({ urls: [swLastResort], headers: uaHead });
     return jsonify({ urls: [], headers: [] });

@@ -14,11 +14,11 @@ const CDN = 'https://cdn.javportals.com';
 // 用户点名近义项落点：无码破解 = genres/reducing-mosaic（站方原名）；减码/减少马赛克 = 同一类（站内标题即 Reducing Mosaic）；
 // 无码流出无字面同名类，不硬造，改用站内无码池 genres/uncensored（站方名“无码”）作最接近项；巨乳 = tags/big-tits；大屁股 = tags/big-butt。
 const CATS = [
+  { v: 'genres/reducing-mosaic', n: '无码破解' },
   { v: 'genres/chinese-subtitle', n: '中文字幕' },
   { v: 'genres/jav', n: '日本AV' },
   { v: 'genres/uncensored', n: '无码' },
   { v: 'genres/censored', n: '有码' },
-  { v: 'genres/reducing-mosaic', n: '无码破解' },
   { v: 'genres/vietnamese-subtitles', n: '越南语字幕' },
   { v: 'genres/english-subtitle', n: '英文字幕' },
   { v: 'genres/thai-subtitle', n: '泰文字幕' },
@@ -160,6 +160,30 @@ async function category(reqIn) {
   const body = reqIn?.body || {};
   const zoneId = String(Array.isArray(body.id) ? body.id[0] : body.id || body.tid || '');
   const page = Math.max(1, parseInt(body.page, 10) || 1);
+  // 中文字幕：站方 genres/chinese-subtitle 页本身是空的（站方显示“暂无影片”，
+  // /zh/ 与 /en/、p=1/p=2 均 0 卡），但中字片实际被错归到 english-subtitle
+  // 类下（2026-11-19 实测：该类 21 卡里 18 卡标题含【中文字幕】，如 DLDSS-163）。
+  // 本 tab 改取 english-subtitle 页、按标题含“中文字幕”过滤；同时并取
+  // chinese-subtitle 页（站方日后补归类即自动并入），按 vod_id 去重。
+  if (zoneId === 'genres/chinese-subtitle') {
+    const cnPath = page === 1 ? '/zh/genres/chinese-subtitle/' : ('/zh/genres/chinese-subtitle/?p=' + page);
+    const enPath = page === 1 ? '/zh/genres/english-subtitle/' : ('/zh/genres/english-subtitle/?p=' + page);
+    const cnHtml = await getHtml(cnPath);
+    const enHtml = await getHtml(enPath);
+    const seen = new Set();
+    const list = [];
+    for (const v of parseCards(cnHtml)) {
+      if (!seen.has(v.vod_id)) { seen.add(v.vod_id); list.push(v); }
+    }
+    for (const v of parseCards(enHtml)) {
+      if (seen.has(v.vod_id)) continue;
+      if (String(v.vod_name || '').indexOf('中文字幕') < 0) continue;
+      seen.add(v.vod_id);
+      list.push(v);
+    }
+    const next = hasNextPage(cnHtml, page) || hasNextPage(enHtml, page);
+    return { page, pagecount: next ? page + 1 : page, list };
+  }
   let path;
   if (zoneId === 'home' || !zoneId) {
     path = page === 1 ? '/zh/' : ('/zh/?p=' + page);

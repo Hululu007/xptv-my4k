@@ -1018,7 +1018,10 @@ const appConfig = {
   ver: 1,
   title: NAME,
   site: SITE,
-  tabs: CATS.map(c => ({ name: c.type_name, ext: { tid: c.type_id } })),
+  // 顶级分类收敛：CATS 全量 915（226 分类 + 260 标签 + 429 演员）作顶级
+  // tab 会把 App 顶栏撑爆；只取前 60 个分类（按站方顺序、大工作室在前），
+  // 标签与演员不进顶级（可走搜索）。getCards 仍用全量 CATS 查 tid，不受影响。
+  tabs: CATS.filter(c => c.type_id.charAt(0) === 'c').slice(0, 60).map(c => ({ name: c.type_name, ext: { tid: c.type_id } })),
 };
 
 function t(v) {
@@ -1709,7 +1712,22 @@ async function getTracks(ext) {
   const cands = [];
   if (emb.streamcash.length) cands.push({ score: 80, name: '直连', entry: 's:' + emb.streamcash[0] });
   if (vid) cands.push({ score: vidScore, name: '高清', entry: 'w:' + vid });
-  if (emb.byse.length) cands.push({ score: 60, name: '高清B', entry: 'b:' + emb.byse[0] });
+  // Byse 线先验活：API 回 404（video not found）说明文件已从该宿主删，
+  // 该线必死，直接不进候选（2026-11-19 实测 p4c8shms1mq9 即此情形，
+  // 死线排第一、用户点开无内容）。403/超时等判不准时保留（设备出口
+  // 可能正常），只在 404 坐实已删时才丢。
+  if (emb.byse.length) {
+    let byseGone = false;
+    try {
+      const u = new URL(emb.byse[0]);
+      const code = (u.pathname.match(/\/e\/([^/?#]+)/) || [])[1] || '';
+      if (code) {
+        const chk = await getJson(u.origin + '/api/videos/' + encodeURIComponent(code), 8000);
+        if (chk && chk.status === 404) byseGone = true;
+      }
+    } catch (e) {}
+    if (!byseGone) cands.push({ score: 60, name: '高清B', entry: 'b:' + emb.byse[0] });
+  }
   // XPTV 无嗅探位：x: 候选（嵌页/详情页地址）交给播放器只会转圈，不再出线
   cands.sort((a, b) => b.score - a.score);
 

@@ -56,6 +56,20 @@ function hiResCover(url) {
     return url.replace(/\/s360\//, '/s1080/');
 }
 
+// 2026-11-19 根因：data-preview 看似 preview.png、实为 MP4 视频预览
+// （ftyp/isom 魔数，Content-Type 却谎报 image/png），播放器图片加载器
+// 解不出、封面全空。站内静态封面在同 hash/ID 的 img2 路径：
+//   preview/<hash>/<id>/preview.png  →  img2/s360/<hash>/<id>/cover.jpg
+// （detail 页相关视频区同款式；hash 与 preview 一致，实测 1pondo-040125_001
+// 两边 hash 均为 cd）。s1080 由 hiResCover 升级。新片 cover.jpg 可能尚未
+// 生成（404），属站方状态、无静态图可替，不回落 MP4（回落也显示不出）。
+function staticCover(previewUrl) {
+    const u = t(previewUrl);
+    const m = u.match(/^https:\/\/icdn\.123av\.me\/preview\/([0-9a-f]{2})\/([^/]+)\/preview\.png/i);
+    if (!m) return u;
+    return 'https://icdn.123av.me/img2/s360/' + m[1] + '/' + m[2] + '/cover.jpg';
+}
+
 function parseList(html) {
     const items = [];
     const seen = {};
@@ -74,7 +88,7 @@ function parseList(html) {
         const title = tm ? t(tm[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')) : link.split('/').pop();
         let pic = '';
         const pv = b.match(/data-preview="(https?:\/\/[^"]+)"/i);
-        if (pv) pic = pv[1];
+        if (pv) pic = staticCover(pv[1]);
         if (!pic) {
             const im = b.match(/class="card__img"[^>]+src="(https?:\/\/[^"]+)"/i)
                 || b.match(/src="(https?:\/\/[^"]+)"[^>]+class="card__img"/i);

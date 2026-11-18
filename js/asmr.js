@@ -6,6 +6,17 @@ const API = 'https://api.asmr.one';
 const UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
 const PAGE_SIZE = 20;
 
+// 2026-11-19 三腿取 JSON：用户手机直连 api.asmr.one 失败（VM 全通）；site-fetch Worker 腿（JSON 以文本回传）→ jina 腿 → 直连，首个可解析 JSON 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function parseJsonLoose(data) {
+  const s = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+  if (!s) return null;
+  try { const j = JSON.parse(s); return (j && typeof j === 'object') ? j : null; } catch (e) {}
+  const a = s.indexOf('{'); const b = s.lastIndexOf('}');
+  if (a >= 0 && b > a) { try { const j = JSON.parse(s.slice(a, b + 1)); return (j && typeof j === 'object') ? j : null; } catch (e2) {} }
+  return null;
+}
+
 const ORDERS = [
 { type_id: 'create_date', type_name: '最新'},
 { type_id: 'release', type_name: '新发'},
@@ -24,11 +35,20 @@ tabs: ORDERS.map((o) => ({ name: o.type_name, ext: { tid: o.type_id}})),
 function t(v) { return String(v == null? '': v).trim();}
 
 async function apiGet(path) {
+const url = API + path;
+const h = { 'User-Agent': UA, 'Accept': 'application/json', 'Referer': 'https://www.asmr.one/'};
 try {
-const { data} = await $fetch.get(API + path, {
-headers: { 'User-Agent': UA, 'Accept': 'application/json', 'Referer': 'https://www.asmr.one/'},
-});
-if (typeof data === 'object') return data;
+const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+if (r && r.status === 200) { const j = parseJsonLoose(r.data); if (j) return j; }
+} catch (e) {}
+try {
+const h2 = Object.assign({}, h, { 'x-respond-with': 'text' });
+const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+if (r && r.status === 200) { const j = parseJsonLoose(r.data); if (j) return j; }
+} catch (e) {}
+try {
+const { data} = await $fetch.get(url, { headers: h, timeout: 15000 });
+if (typeof data === 'object' && data) return data;
 return JSON.parse(String(data || '{}'));
 } catch (e) { return {};}
 }

@@ -65,18 +65,25 @@ function withTimeout(promise, ms) {
 async function reqGet(url, headers, timeoutMs) {
   try {
     const r = await withTimeout($fetch.get(url, { headers: headers || {}, timeout: timeoutMs || 15000, responseType: 'text', transformResponse: [(d) => d] }), REQ_TIMEOUT_MS);
-    if (!r || r.__timeout) return { status: 0, body: '' };
+    if (!r || r.__timeout) return { status: 0, body: '', headers: {} };
     const text = typeof r.data === 'string' ? r.data : (r.data === null || r.data === undefined ? '' : JSON.stringify(r.data));
     const ok = r.status >= 200 && r.status < 300;
-    return { status: r.status || 0, body: ok ? text : '' };
+    return { status: r.status || 0, body: ok ? text : '', headers: r.headers || {} };
   } catch (e) {
-    return { status: 0, body: '' };
+    return { status: 0, body: '', headers: {} };
   }
 }
 async function reqPostForm(url, data, headers) {
   const body = Object.keys(data).map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(data[k])).join('&');
+  // 站方 API 校验 PHP 会话：调用方已 getAuth() 时把 PHPSESSID 一并带上；
+  // 未鉴权时不带（避免空 Cookie 头干扰）。
+  const hdrs = Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, headers || {});
   try {
-    const r = await withTimeout($fetch.post(url, body, { headers: Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, headers || {}), timeout: 15000 }), REQ_TIMEOUT_MS);
+    const ck = (typeof authCookie === 'function') ? authCookie() : '';
+    if (ck && !hdrs.Cookie && !hdrs.cookie) hdrs.Cookie = ck;
+  } catch (e) { /* 忽略 */ }
+  try {
+    const r = await withTimeout($fetch.post(url, body, { headers: hdrs, timeout: 15000 }), REQ_TIMEOUT_MS);
     if (!r || r.__timeout) return { status: 0, json: null, text: '' };
     if (typeof r.data === 'string') {
       try { return { status: r.status || 0, json: JSON.parse(r.data), text: r.data }; }
@@ -89,6 +96,19 @@ async function reqPostForm(url, data, headers) {
 }
 
 // ---------- 鉴权（首页 meta，30 分钟缓存） ----------
+// 站方 API 必须带 PHP 会话：首页下发 PHPSESSID，/api/v1/player 校验它与
+// _token/_socket 的绑定关系；只发 Authorization 不发 Cookie 时服务端直接
+// 断开连接（VM 侧表现为 POST 无响应挂起）。故 getAuth 同时带回 session cookie。
+function pickCookie(headers, name) {
+  const h = headers || {};
+  const raw = h['set-cookie'] || h['Set-Cookie'] || h['x-set-cookie'] || '';
+  const list = Array.isArray(raw) ? raw : [String(raw)];
+  for (const item of list) {
+    const m = String(item).match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
+    if (m) return name + '=' + m[1];
+  }
+  return '';
+}
 let AUTH_CACHE = null;
 async function getAuth() {
   if (AUTH_CACHE && Date.now() - AUTH_CACHE.ts < 30 * 60 * 1000) return AUTH_CACHE.auth;
@@ -98,8 +118,12 @@ async function getAuth() {
   const socket = (r.body.match(/meta name="_socket"[^>]*value="([^"]+)"/) || [])[1] || '';
   if (!token || !socket) throw new Error('auth meta missing');
   const auth = 'Basic ' + b64encode(token + ':' + socket);
-  AUTH_CACHE = { ts: Date.now(), auth };
-  return auth;
+  const cookie = pickCookie(r.headers, 'PHPSESSID');
+  AUTH_CACHE = { ts: Date.now(), auth, cookie };
+  return AUTH_CACHE.auth;
+}
+function authCookie() {
+  return (AUTH_CACHE && AUTH_CACHE.cookie) || '';
 }
 
 // ---------- 列表解析 ----------

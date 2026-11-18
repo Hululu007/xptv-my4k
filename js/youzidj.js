@@ -12,6 +12,14 @@ const SITE = 'https://youzidj.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
 
+// 2026-11-19 三腿取数：用户手机直连 youzidj.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+// 注意：只改列表/详情/搜索的 GET 取页。会话类 POST（bootstrap / age-check / playback）带 cookie，
+// Worker 不透传 Cookie，改走 Worker 会丢会话，故一律保留直连。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 const GENRES = [
     ['cultivation', '修仙'], ['wealthy-family', '豪门'], ['urban', '都市'], ['costume', '古装'],
     ['family-ethics', '家庭伦理'], ['martial-arts', '武侠'], ['campus', '校园'],
@@ -57,12 +65,19 @@ function fixUrl(u) {
 
 async function getHtml(url) {
     const headers = { 'User-Agent': UA, 'Referer': REFERER, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
-    for (let i = 0; i < 2; i++) {
-        try {
-            const { data, status } = await $fetch.get(url, { headers: headers });
-            if ((status === undefined || status === 200) && typeof data === 'string' && data) return data;
-        } catch (e) {}
-    }
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, headers, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const { data, status } = await $fetch.get(url, { headers: headers, timeout: 15000 });
+        if ((status === undefined || status === 200) && typeof data === 'string' && data) return data;
+    } catch (e) {}
     return '';
 }
 

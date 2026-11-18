@@ -193,6 +193,37 @@ function workerUrl(embed, durl) {
   const path = isF4Host(host) ? '/f4' : '/v';
   return WORKER + path + '?u=' + encodeURIComponent(embed) + '&r=' + encodeURIComponent(durl);
 }
+function isDoodHost(host) { return /dood|d000d|do7go|playmogo/i.test(host || ''); }
+// 设备侧直解 dood/playmogo 嵌页（Worker /v 回 502“embed fetch status 403”，
+// playmogo 拦 CF 出口；设备侧直取嵌页 + /pass_md5 取前缀 + token/expiry 拼直链）。
+// 与 sextb.js resolveDood 同款：嵌页直取 → /pass_md5 → 前缀 + token/expiry。
+async function resolveDood(embed, durl) {
+  try {
+    const u = new URL(embed);
+    const { data, status } = await $fetch.get(embed, { headers: { 'User-Agent': UA, 'Referer': durl }, timeout: 15000 });
+    const html = (status === 200 && typeof data === 'string') ? data : '';
+    if (!html) return '';
+    const pm = html.match(/(\/pass_md5\/[A-Za-z0-9_\-\/]+)/);
+    if (!pm) return '';
+    const passUrl = u.origin + pm[1];
+    let prefix = '';
+    try {
+      const r2 = await $fetch.get(passUrl, { headers: { 'User-Agent': UA, 'Referer': embed }, timeout: 15000 });
+      if (typeof r2.data === 'string') prefix = r2.data.trim();
+    } catch (e) {}
+    if (!/^https?:\/\//i.test(prefix)) return '';
+    const tokM = html.match(/[?&]token=([A-Za-z0-9_\-]+)/) || html.match(/token\s*[:=]\s*["']([A-Za-z0-9_\-]+)["']/);
+    const expM = html.match(/expiry\s*[:=]\s*["']?(\d{9,})/);
+    let finalUrl = prefix;
+    if (tokM) finalUrl += '?token=' + tokM[1] + (expM ? '&expiry=' + expM[1] : '');
+    // 探活：Range 取首字节，200/206 才收
+    try {
+      const r3 = await $fetch.get(finalUrl, { headers: { 'User-Agent': UA, 'Referer': embed, 'Range': 'bytes=0-0' }, timeout: 15000 });
+      if (r3.status === 200 || r3.status === 206 || r3.status === undefined) return finalUrl;
+    } catch (e) {}
+    return '';
+  } catch (e) { return ''; }
+}
 
 // ---------- 列表解析（javct 同款：锚点扫描 + 锚点前 900 字内最后一个 img + 顺序对齐标题/番号） ----------
 function parseCards(html) {
@@ -614,6 +645,15 @@ async function play(reqIn) {
     if (em) {
     let embed = em[1];
     if (embed.startsWith('//')) embed = 'https:' + embed;
+    // dood/playmogo 线：设备侧直解（Worker /v 502 死），解出真直链才回；
+    // 解不出才回 Worker 地址（死地址，播放器转圈，但总比空地址强）。
+    if (isDoodHost(hostOf(embed))) {
+      const direct = await resolveDood(embed, durl);
+      if (direct) {
+        const result = { parse: 0, url: direct, header: { 'User-Agent': UA, 'Referer': embed } };
+        return result;
+      }
+    }
     const result = { parse: 0, url: workerUrl(embed, durl), header: { 'User-Agent': UA, 'Referer': durl } };
         return result;
   }

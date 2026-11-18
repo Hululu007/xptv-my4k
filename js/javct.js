@@ -23,6 +23,7 @@
 // （番号只从片名取）。
 const HOST = 'https://javct.net';
 const WORKER = 'https://sextb-hls.li768435813.workers.dev';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function H(referer) {
@@ -35,6 +36,13 @@ function H(referer) {
 }
 
 async function getText(url, referer) {
+    // 取数依次走：自家中转 site-fetch → 直连；首个拿到真实 HTML 的胜出。
+    // （原只有直连一腿，VM 与部分设备网络均被站方 CF 拦，列表 0 卡。）
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: H(referer), timeout: 15000 });
+        if (r && r.status === 200 && typeof r.data === 'string' && r.data.length > 2000) return r.data;
+        if (r && typeof r.data === 'string' && r.data.length > 2000) return r.data;
+    } catch (e) {}
     try {
         const r = await $fetch.get(url, { headers: H(referer), timeout: 15000 });
         return r && typeof r.data === 'string' ? r.data : '';
@@ -113,6 +121,8 @@ function xorDecrypt(enc, key) {
 }
 
 function isF4Host(host) { return /f4scdn\.com|f4jav\.xyz/i.test(host || ''); }
+function isDoodHost(host) { return /dood|d000d|do7go|playmogo/i.test(host || ''); }
+function isSwHost(host) { return /hglink\.to|streamhg|trailerhg|earnvid|vidhide|ryderjet/i.test(host || ''); }
 function hostOf(url) {
     const m = String(url || '').match(/^https?:\/\/([^\/]+)/i);
     return m ? m[1] : '';
@@ -121,6 +131,99 @@ function workerUrl(embed, durl) {
     const host = hostOf(embed);
     const path = isF4Host(host) ? '/f4' : '/v';
     return WORKER + path + '?u=' + encodeURIComponent(embed) + '&r=' + encodeURIComponent(durl);
+}
+// ---- 设备侧直解（Worker /f4 与 /v 均已死：上游 403 拦 CF 出口，/f4 与 /v 回 502） ----
+// dood/playmogo：嵌页直取 → /pass_md5 取前缀 + token/expiry 拼直链（sextb 同款）。
+async function resolveDood(embed, durl) {
+    try {
+        const u = new URL(embed);
+        const r = await $fetch.get(embed, { headers: { 'User-Agent': UA, 'Referer': durl }, timeout: 15000 });
+        const html = (r && r.status === 200 && typeof r.data === 'string') ? r.data : '';
+        if (!html) return '';
+        const pm = html.match(/(\/pass_md5\/[A-Za-z0-9_\-\/]+)/);
+        if (!pm) return '';
+        let prefix = '';
+        try {
+            const r2 = await $fetch.get(u.origin + pm[1], { headers: { 'User-Agent': UA, 'Referer': embed }, timeout: 15000 });
+            if (typeof r2.data === 'string') prefix = r2.data.trim();
+        } catch (e) {}
+        if (!/^https?:\/\//i.test(prefix)) return '';
+        const tokM = html.match(/[?&]token=([A-Za-z0-9_\-]+)/) || html.match(/token\s*[:=]\s*["']([A-Za-z0-9_\-]+)["']/);
+        const expM = html.match(/expiry\s*[:=]\s*["']?(\d{9,})/);
+        let finalUrl = prefix;
+        if (tokM) finalUrl += '?token=' + tokM[1] + (expM ? '&expiry=' + expM[1] : '');
+        try {
+            const r3 = await $fetch.get(finalUrl, { headers: { 'User-Agent': UA, 'Referer': embed, 'Range': 'bytes=0-0' }, timeout: 15000 });
+            if (r3.status === 200 || r3.status === 206 || r3.status === undefined) return finalUrl;
+        } catch (e) {}
+        return '';
+    } catch (e) { return ''; }
+}
+// VidHide（hglink/trailerhg/earnvid）：嵌页直取 → 解 Dean Edwards packer →
+// 取 hls2（真流，token 绑取嵌页 IP，设备侧直取才通）；hls3 已死（404）、
+// hls4 是 TikTok 广告图诱饵，绝不取。
+function jsUnescapeSingle(s) {
+    return s.replace(/\\(.)/g, function (m, c) {
+        if (c === 'n') return '\n';
+        if (c === 'r') return '\r';
+        if (c === 't') return '\t';
+        return c;
+    });
+}
+function unpackDeanEdwards(html) {
+    const m = String(html || '').match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?\}\s*\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:[^'\\]|\\.)*)'\.split\('\|'\)/);
+    if (!m) return '';
+    let p = jsUnescapeSingle(m[1]);
+    const a = parseInt(m[2], 10);
+    const c = parseInt(m[3], 10);
+    const k = jsUnescapeSingle(m[4]).split('|');
+    const enc = function (n) { return (n < a ? '' : enc(Math.floor(n / a))) + ((n % a) > 35 ? String.fromCharCode((n % a) + 29) : (n % a).toString(36)); };
+    let i = c;
+    while (i--) {
+        if (k[i]) {
+            const word = k[i];
+            p = p.replace(new RegExp('\\b' + enc(i) + '\\b', 'g'), function () { return word; });
+        }
+    }
+    return p;
+}
+function extractHgLinks(text) {
+    const links = {};
+    const re = /"hls(\d+)"\s*:\s*"([^"]+)"/g;
+    let m;
+    while ((m = re.exec(String(text || ''))) !== null) links['hls' + m[1]] = m[2];
+    return links;
+}
+async function resolveStreamHg(embed, durl) {
+    try {
+        const host = hostOf(embed);
+        let pageUrl = embed;
+        if (/(^|\.)hglink\.to$/i.test(host)) {
+            const parts = new URL(embed).pathname.split('/').filter(Boolean);
+            const code = parts[parts.length - 1] || '';
+            if (!code) return '';
+            pageUrl = 'https://trailerhg.xyz/e/' + code;
+        }
+        const r = await $fetch.get(pageUrl, { headers: { 'User-Agent': UA, 'Referer': durl }, timeout: 15000 });
+        const html = (r && r.status === 200 && typeof r.data === 'string') ? r.data : '';
+        if (!html) return '';
+        const unpacked = unpackDeanEdwards(html) || html;
+        const links = extractHgLinks(unpacked);
+        const heads = { 'User-Agent': UA };
+        for (const key of ['hls2', 'hls3']) {
+            const u = links[key];
+            if (!u || !/^https?:\/\//i.test(u)) continue;
+            try {
+                const rp = await $fetch.get(u, { headers: heads, timeout: 15000 });
+                const d = typeof rp.data === 'string' ? rp.data : '';
+                if ((rp.status === 200 || rp.status === undefined) && d && d.indexOf('#EXTM3U') !== -1) return u;
+            } catch (e) {}
+        }
+        // 探活全败时仍把 hls2（真流，签名 master）当兜底回：VM 侧探活必 403
+        // （CDN 拦数据中心 IP），设备侧直取才通；回死 Worker 地址只会转圈。
+        if (links.hls2 && /^https?:\/\//i.test(links.hls2)) return links.hls2;
+        return '';
+    } catch (e) { return ''; }
 }
 
 function parseCards(html) {
@@ -302,22 +405,33 @@ async function getPlayinfo(ext) {
     if (!originM) return jsonify({ urls: [], headers: [] });
     const ajaxUrl = originM[1] + '/ajax/player';
     const body = 'episode=' + encodeURIComponent(episode) + '&filmId=' + encodeURIComponent(filmId) + '&pt=' + encodeURIComponent(pt);
+    const ajaxHeaders = {
+        'User-Agent': UA,
+        'Referer': durl,
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+    };
     let json = null;
+    // ① 经 site-fetch 转发（VM 直连被 CF 拦、设备侧也未必通；中转腿先行）
     try {
-        const r = await $fetch.post(ajaxUrl, body, {
-            headers: {
-                'User-Agent': UA,
-                'Referer': durl,
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-                'X-Requested-With': 'XMLHttpRequest',
-            },
-        });
+        const r = await $fetch.post(SITE_FETCH + '/?u=' + encodeURIComponent(ajaxUrl), body, { headers: ajaxHeaders, timeout: 15000 });
         const status = r && typeof r.status === 'number' ? r.status : 200;
         if ((status === 200 || status === undefined) && r && r.data != null) {
-            json = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            const j = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            if (j && (j.player || j.player_enc)) json = j;
         }
-    } catch (e) { json = null; }
+    } catch (e) {}
+    // ② 直连 POST
+    if (!json) {
+        try {
+            const r = await $fetch.post(ajaxUrl, body, { headers: ajaxHeaders, timeout: 15000 });
+            const status = r && typeof r.status === 'number' ? r.status : 200;
+            if ((status === 200 || status === undefined) && r && r.data != null) {
+                json = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            }
+        } catch (e) { json = null; }
+    }
     if (!json || json.error) return jsonify({ urls: [], headers: [] });
     let playerHtml = '';
     if (json.player_enc) playerHtml = xorDecrypt(json.player_enc, pk || '');
@@ -329,7 +443,20 @@ async function getPlayinfo(ext) {
     if (em) {
         let embed = em[1];
         if (embed.indexOf('//') === 0) embed = 'https:' + embed;
-        result.urls = [workerUrl(embed, durl)];
+        // 设备侧直解优先（Worker /f4 与 /v 已死，回 502）：dood/playmogo 与
+        // VidHide 系走设备侧直解；解不出才回 Worker 地址（死地址，仅作兜底）。
+        const ehost = hostOf(embed);
+        if (isDoodHost(ehost)) {
+            const direct = await resolveDood(embed, durl);
+            if (direct) result.urls = [direct];
+            else result.urls = [workerUrl(embed, durl)];
+        } else if (isSwHost(ehost)) {
+            const direct = await resolveStreamHg(embed, durl);
+            if (direct) result.urls = [direct];
+            else result.urls = [workerUrl(embed, durl)];
+        } else {
+            result.urls = [workerUrl(embed, durl)];
+        }
     } else {
         const mm = playerHtml.match(/https?:\/\/[^"'\s<>]+\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?/i);
         if (mm) result.urls = [mm[0]];

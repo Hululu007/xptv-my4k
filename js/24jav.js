@@ -13,6 +13,7 @@
 // 带字幕（仅番号条目）。
 const HOST = 'https://www4.24-jav.com';
 const WORKER = 'https://24jav-hls.li768435813.workers.dev'; // 部署见 ~/workspace/xptv_batch/workers/24jav-hls.js（用户自己部署）
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // 纯 JS base64url 编码（不用 Buffer，XPTV 沙箱未必有 Buffer）。
@@ -88,6 +89,14 @@ async function getHtml(path) {
             if (body) return body;
         } catch (e) {}
     }
+    // 直连三试皆空时走自家 site-fetch Worker 腿兜底（白名单含 www4.24-jav.com）。
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), {
+            headers: { 'User-Agent': UA, 'Referer': HOST + '/' }, timeout: 15000,
+        });
+        const body = typeof r.data === 'string' ? r.data : '';
+        if (body) return body;
+    } catch (e) {}
     return '';
 }
 
@@ -98,6 +107,12 @@ async function getText(url) {
             if (r && r.status === 200 && typeof r.data === 'string' && r.data) return r.data;
         } catch (e) {}
     }
+    // mee master 取数兜底（master 在 mee18player/meeplayer 域，不在白名单时
+    // Worker 回 400、自动落回空，不影响直连通路）。
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: { 'User-Agent': UA, 'Referer': HOST + '/' }, timeout: 15000 });
+        if (r && r.status === 200 && typeof r.data === 'string' && r.data) return r.data;
+    } catch (e) {}
     return '';
 }
 
@@ -123,6 +138,10 @@ function parseCards(html) {
             vod_name: cleanLabel(aM[2]) || path.replace(/\//g, ''),
             vod_pic: imgM ? normUrl(imgM[1].trim()) : '',
             vod_remarks: qM ? cleanLabel(qM[1]) : '',
+            // 卡片必须带 ext.id：XPTV 把 card.ext 传给 getTracks，缺 ext 时
+            // 设备侧 getTracks 收不到 id、0 轨（2026-11-19 根因，harness 会
+            // 用 vod_id 兜底所以 VM 侧看不出来）。
+            ext: { id: path },
         });
     }
     return out;

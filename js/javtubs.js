@@ -6,8 +6,10 @@
 // 主腿 earnvidjavgg.xyz（VidHide）：embed 页内 packed JS 解包出 hls2 master（480p/720p/1080p 多档），
 // 分片明文 TS，签名 36h；VidHide 播单 token 绑 IP——master 必须与取 embed 页同一次调用连续取；
 // play() 点播时现解现取，绝不用详情时缓存的地址；
-// dramiyos-cdn 的线在 XPTV 里无代理走不通：getPlayinfo 最多重铸 3 次优先取 acek-cdn 的线，
-// 3 次都只有 dramiyos-cdn 时直接返回空（不列播不了的线）；acek-cdn 的线直出。
+// dramiyos-cdn 的线：优先取 acek-cdn，3 次都只有 dramiyos 时也直出 master
+// （2026-11-19 改：dramiyos hls2 token 绑取嵌页那次请求的 IP，设备侧直取
+// 嵌页、播放器以同一 IP 拉流才能过；VM/CF 出口 403 是机房 IP 被拦，不是
+// 地址本身坏；同 javgg 设备侧直解。绝不用 hls4——TikTok 广告图诱饵）。
 // VM 侧注意：VidHide token 绑取嵌页那次请求的出口 IP，VM 出口 IP 每次连接都可能变，
 // 故 VM 侧 master 一律 403（acek/dramiyos、换 Referer/UA/Cookie 均 403），VM 验不出流，
 // 须以用户设备真机为准；不要拿 VM 403 当设备失败，也不要为此建 Worker 中转
@@ -690,7 +692,9 @@ function isAcekMaster(u) { return /acek-cdn\.com/i.test(String(u || '')); }
 function isDramiyosMaster(u) { return /dramiyos-cdn\.com/i.test(String(u || '')); }
 
 // 点播时现铸 master：最多重铸 3 次，优先取 acek-cdn 的线；
-// 3 次都只有 dramiyos-cdn（XPTV 无代理走不通）时返回空，不列播不了的线。
+// 3 次都只有 dramiyos-cdn 时也返回它（不再置空）：dramiyos 的 hls2 token
+// 绑取嵌页那次请求的 IP，设备侧直取嵌页、播放器以同一 IP 拉流才能过
+// （同 javgg 设备侧直解；VM/CF 出口一律 403 是机房 IP 被拦，不是地址本身坏）。
 async function resolveFreshPreferAcek(durl) {
     let dramiyos = null;
     for (let i = 0; i < 3; i++) {
@@ -700,7 +704,7 @@ async function resolveFreshPreferAcek(durl) {
         if (isDramiyosMaster(fr.master) && !dramiyos) dramiyos = fr;
         if (!isDramiyosMaster(fr.master) && !isAcekMaster(fr.master)) return fr;
     }
-    return dramiyos ? { tiers: dramiyos.tiers, embed: dramiyos.embed, master: '', dramiyosOnly: true } : { tiers: [], embed: '', master: '' };
+    return dramiyos || { tiers: [], embed: '', master: '' };
 }
 
 async function getConfig() {

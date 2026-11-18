@@ -7,6 +7,12 @@ const HOST = 'https://91crdj.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const IMG_PROXY = 'https://bagua-img-proxy.li768435813.workers.dev';
 
+// 2026-11-19 三腿取数：用户手机直连 91crdj.com/91crdjai.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 const CATS = [
     ['duanju', '成人短剧'], ['manju', '成人漫剧'], ['zhenrenju', '真人剧'], ['shipin', '成人视频'],
     ['manhua', '成人漫画'], ['xiaoshuo', '成人小说'], ['paihang', '热播榜'], ['biaoqian', '标签榜'],
@@ -24,21 +30,24 @@ function parseEpRef(url) {
 
 async function postPlayback(host, id, n, referer) {
     const api = host + '/api/videos/' + id + '/episodes/' + n + '/playback';
-    try {
-        // 注意：body 必须不传——传空字符串会回 {"status":0,"msg":"播放参数无效"}；不传 body 才给流
-        const r = await $fetch.post(api, undefined, {
-            headers: { 'User-Agent': UA, 'Referer': referer, 'Accept': 'application/json' },
-        });
-        let data = r.data;
-        if (typeof data === 'string') {
-            try { data = JSON.parse(data); } catch (e) { return ''; }
-        }
-        const streams = data && data.data && data.data.streams;
-        const main = streams && (streams.main || streams.preview || '');
-        return typeof main === 'string' ? main : '';
-    } catch (e) {
-        return '';
+    // 注意：body 必须不传——传空字符串会回 {"status":0,"msg":"播放参数无效"}；不传 body 才给流。
+    // 两腿：site-fetch Worker 透传 → 直连（jina 不支持 POST）；Worker 腿无流时回落直连。
+    // Worker 透传时 body 为空串（request.text() 无 body 即 ''），若站方因此判无效，直连腿会接住。
+    const heads = { 'User-Agent': UA, 'Referer': referer, 'Accept': 'application/json' };
+    const targets = [SITE_FETCH + '/?u=' + encodeURIComponent(api), api];
+    for (const target of targets) {
+        try {
+            const r = await $fetch.post(target, undefined, { headers: heads, timeout: 12000 });
+            let data = r.data;
+            if (typeof data === 'string') {
+                try { data = JSON.parse(data); } catch (e) { continue; }
+            }
+            const streams = data && data.data && data.data.streams;
+            const main = streams && (streams.main || streams.preview || '');
+            if (typeof main === 'string' && main) return main;
+        } catch (e) { /* try next leg */ }
     }
+    return '';
 }
 
 const appConfig = {
@@ -64,15 +73,23 @@ function isVideoFormat(url) {
 }
 
 async function fetchHtml(url, referer) {
+    const h = {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Referer': referer || HOST + '/',
+    };
     try {
-        const { data } = await $fetch.get(url, {
-            headers: {
-                'User-Agent': UA,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9',
-                'Referer': referer || HOST + '/',
-            },
-        });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const { data } = await $fetch.get(url, { headers: h, timeout: 15000 });
         return typeof data === 'string' ? data : String(data || '');
     } catch (e) {
         return '';

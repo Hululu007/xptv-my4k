@@ -7,6 +7,12 @@ const cheerio = createCheerio();
 const HOST = 'https://missav.fans';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/604.1.14 (KHTML, like Gecko)';
 
+// 2026-11-19 三腿取数：用户手机直连 missav.fans 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 const M3U8_PREFIXES = [
     'https://surrit.mrstcdn.store/',
     'https://surrit.com/',
@@ -60,8 +66,18 @@ function headers(referer) {
 }
 
 async function getHtml(url, referer) {
+    const h = headers(referer);
     try {
-        const { data } = await $fetch.get(url, { headers: headers(referer) });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const { data } = await $fetch.get(url, { headers: h, timeout: 15000 });
         return typeof data === 'string' ? data : String(data || '');
     } catch (e) {
         return '';

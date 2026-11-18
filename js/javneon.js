@@ -1206,17 +1206,21 @@ async function getPlayinfo(ext) {
     const id = __s(ext.url || ext.id || '');
     const name = __s(ext.name || '');
     if (!id) return jsonify({ urls: [], headers: [] });
+    // 先搜字幕、后解流：与 javhey 同因——VidHide 系直链令牌短命，解流后
+    // 再搜字幕（数秒）会把令牌耗过期、播放器取到 403。字幕先行，流现解
+    // 现返，令牌新鲜才有效。
+    let subs = null;
+    if (name) {
+        try {
+            subs = await subSearch(name);
+        } catch (e) { /* 无字幕不影响播放 */ }
+    }
     let r = null;
     try { r = await play({ body: { id } }); } catch (e) { r = null; }
     const url = __s(r && r.url);
     if (!url) return jsonify({ urls: [], headers: [] });
     const result = { urls: [url], headers: [r.header || {}] };
-    if (name) {
-        try {
-            const subs = await subSearch(name);
-            if (subs && subs.length) result.subs = subs;
-        } catch (e) { /* 无字幕不影响播放 */ }
-    }
+    if (subs && subs.length) result.subs = subs;
     return jsonify(result);
 }
 

@@ -12,9 +12,14 @@
 // 签名只在 getPlayinfo 播前现铸（新鲜 geo + 新鲜 token）：getTracks 只给未签名变体地址 + vid/raw，
 // 详情时铸好的 token 到用户点播时可能已过期/换 IP，点播时现取才有效；getTracks 全程 try/catch 绝不抛错；
 // 带字幕（仅片名含可抽番号时搜，播放地址域名会被误抽成 "AV01" 假番号，故只按片名查）。
+// 2026-11-19 取数加 site-fetch Worker 腿兜底（直连→Worker，VM 全通但设备侧无轨，
+// 列表/详情/master 取数失败是无轨根因）；geo 与 cdn-access 的 JWT 铸造仍只直连
+// （绑 IP，走 Worker 铸出的 token 设备播不了），getJson/getText/postJson 用
+// directOnly=true 锁死这两处。
 const HOST = 'https://www.av01.media';
 const API = 'https://www.av01.media/api/v1';
 const GEO_URL = 'https://files.iw01.xyz/edge/geo.js?json';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 const NEW_TAGS = [
@@ -76,16 +81,26 @@ function parseJson(data) {
     try { return JSON.parse(String(data)); } catch (e) { return null; }
 }
 
-async function getJson(url) {
+// 取数：直连优先 → 直连空/失败时走自家 site-fetch Worker 腿兜底
+// （www.av01.media / files.iw01.xyz 已在白名单；Worker 回 JSON 文本，
+// parseJson 照常解析）。directOnly=true 时只直连：geo 与 cdn-access
+// 的 JWT 绑请求方 IP，走 Worker 铸出的 token 设备播不了，绝不能中转。
+async function getJson(url, directOnly) {
     try {
         const r = await $fetch.get(url, { headers: headers() });
+        const d = parseJson(r && r.data);
+        if (d) return d;
+    } catch (e) {}
+    if (directOnly) return null;
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(), timeout: 15000 });
         const d = parseJson(r && r.data);
         if (d) return d;
     } catch (e) {}
     return null;
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, directOnly) {
     try {
         const r = await $fetch.post(url, JSON.stringify(body), {
             headers: Object.assign(headers(), { 'Content-Type': 'application/json' }),
@@ -93,12 +108,27 @@ async function postJson(url, body) {
         const d = parseJson(r && r.data);
         if (d) return d;
     } catch (e) {}
+    if (directOnly) return null;
+    try {
+        const r = await $fetch.post(SITE_FETCH + '/?u=' + encodeURIComponent(url), JSON.stringify(body), {
+            headers: Object.assign(headers(), { 'Content-Type': 'application/json' }),
+            timeout: 15000,
+        });
+        const d = parseJson(r && r.data);
+        if (d) return d;
+    } catch (e) {}
     return null;
 }
 
-async function getText(url) {
+async function getText(url, directOnly) {
     try {
         const r = await $fetch.get(url, { headers: headers() });
+        const s = String((r && r.data) || '');
+        if (s) return s;
+    } catch (e) {}
+    if (directOnly) return '';
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(), timeout: 15000 });
         return String((r && r.data) || '');
     } catch (e) { return ''; }
 }
@@ -109,7 +139,7 @@ let _geoAt = 0;
 async function getGeo(force) {
     const now = Date.now();
     if (!force && _geo && now - _geoAt < 9 * 60 * 1000) return _geo;
-    const d = await getJson(GEO_URL);
+    const d = await getJson(GEO_URL, true);
     if (d && d.token_v2 && d.expires && d.ip) {
         _geo = d;
         _geoAt = now;
@@ -179,7 +209,7 @@ async function getCdnToken(vid, force) {
         const q = 'token_v2=' + encodeURIComponent(String(geo.token_v2))
             + '&expires=' + encodeURIComponent(String(geo.expires))
             + '&ip=' + encodeURIComponent(String(geo.ip));
-        const d = await getJson(API + '/videos/' + vid + '/cdn-access?' + q);
+        const d = await getJson(API + '/videos/' + vid + '/cdn-access?' + q, true);
         const tk = d && d.access_token ? String(d.access_token) : '';
         if (tk) {
             const ent = {
@@ -229,6 +259,10 @@ function toCard(v) {
         vod_name: title,
         vod_pic: coverUrl(id),
         vod_remarks: dur || (v.dvd_id ? String(v.dvd_id) : ''),
+        // 卡片必须带 ext.id：XPTV 把 card.ext 传给 getTracks，缺 ext 时
+        // 设备侧 getTracks 收不到 id、0 轨（2026-11-19 根因，harness 会
+        // 用 vod_id 兜底所以 VM 侧看不出来）。
+        ext: { id: id },
     };
 }
 

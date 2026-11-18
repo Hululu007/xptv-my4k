@@ -11,6 +11,7 @@
 // 带字幕（有番号）。
 const HOST = 'https://javlust.net';
 const TIFUL = 'https://javtiful.com';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function H(referer) {
@@ -38,6 +39,13 @@ function stripTags(s) {
 async function getText(url, referer) {
     try {
         const r = await $fetch.get(url, { headers: H(referer) });
+        if (r && r.data) return String(r.data);
+    } catch (e) {}
+    // 直连空/失败时走自家 site-fetch Worker 腿兜底（白名单含 javlust.net /
+    // javtiful.com）。注意：票据 POST（fetchPlayback）不走 Worker——票据
+    // 绑请求方，点播时须设备直投。
+    try {
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: H(referer), timeout: 15000 });
         if (r && r.data) return String(r.data);
     } catch (e) {}
     return '';
@@ -88,7 +96,11 @@ function parseCards(html) {
         if (!title) title = code || href.split('/').pop().replace(/-/g, ' ');
         const du = tail.match(/🕓\s*([\d:]+)/);
         const remarks = du ? du[1] : (code || '');
-        items.push({ vod_id: absUrl(href), vod_name: title, vod_pic: pic, vod_remarks: remarks });
+        items.push({ vod_id: absUrl(href), vod_name: title, vod_pic: pic, vod_remarks: remarks,
+            // 卡片必须带 ext.id：XPTV 把 card.ext 传给 getTracks，缺 ext 时
+            // 设备侧 getTracks 收不到 id、0 轨（2026-11-19 根因，harness 会
+            // 用 vod_id 兜底所以 VM 侧看不出来）。
+            ext: { id: absUrl(href) } });
         if (items.length >= 60) break;
     }
     return items;

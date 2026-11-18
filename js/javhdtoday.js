@@ -11,6 +11,7 @@
 
 const SITE = 'https://javhd.today';
 const CN = SITE + '/cn';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const REFERER = CN + '/';
 
@@ -140,6 +141,17 @@ async function getHtml(url, referer) {
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'Referer': referer || REFERER,
   };
+  // ① site-fetch Worker 腿优先（设备侧直连 javhd.today/javhdz.today/savedvids.com
+  // 可能失败；Worker 已验通 javhd.today。URL 含泰文等非 ASCII 字符时
+  // encodeURIComponent 也可避免设备侧 $fetch 的 ByteString 问题）
+  try {
+    const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers });
+    if (r.status === 200) {
+      const s = typeof r.data === 'string' ? r.data : '';
+      if (s.length > 1000) return s;
+      if (s) return s;
+    }
+  } catch (e) { /* fallthrough to direct */ }
   try {
     const { data } = await $fetch.get(url, { headers });
     const s = typeof data === 'string' ? data : '';
@@ -155,14 +167,29 @@ async function getJson(url, referer) {
     'Accept': 'application/json',
     'Referer': referer || REFERER,
   };
+  const parse = (data) => {
+    if (!data) return null;
+    if (typeof data === 'string') { try { return JSON.parse(data); } catch (e) { return null; } }
+    return data;
+  };
+  try {
+    const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers });
+    if (r.status === 200) {
+      const j = parse(r.data);
+      if (j) return j;
+    }
+  } catch (e) { /* fallthrough to direct */ }
   try {
     const { data } = await $fetch.get(url, { headers });
-    if (data) {
-      if (typeof data === 'string') { try { return JSON.parse(data); } catch (e) { return null; } }
-      return data;
-    }
+    return parse(data);
   } catch (e) { /* ignore */ }
   return null;
+}
+
+// 纯字符串取 origin（不依赖 new URL，设备/harness 均可用）
+function originOf(u) {
+  const m = String(u || '').match(/^(https?:\/\/[^\/]+)/i);
+  return m ? m[1] : '';
 }
 
 function parseCards(html) {
@@ -251,7 +278,7 @@ async function resolveF4(embedUrl, referer) {
   const vid = vidM[1];
   const apiM = html.match(/data-api="([^"]+)"/);
   let host = 'https://f4scdn.com';
-  try { host = new URL(embedUrl).origin; } catch (e) { /* ignore */ }
+  host = originOf(embedUrl) || host;
   const playApi = apiM
     ? (apiM[1].startsWith('/') ? host + apiM[1] : apiM[1])
     : `${host}/api/play/${vid}`;
@@ -267,11 +294,10 @@ async function resolveServerJson(playerUrl, referer) {
   if (!pM) return '';
   let host = '';
   let page = 'embed.php';
-  try {
-    const u = new URL(playerUrl);
-    host = u.origin;
-    page = u.pathname.split('/').pop() || 'embed.php';
-  } catch (e) { return ''; }
+  const um = String(playerUrl).match(/^(https?:\/\/[^\/]+)(\/[^?#]*)?/i);
+  if (!um) return '';
+  host = um[1];
+  page = (um[2] || '/embed.php').split('/').pop() || 'embed.php';
   const token = pM[1];
   const apiUrl = `${host}/${page}?json=1&next=0&p=${encodeURIComponent(token)}`;
   const j = await getJson(apiUrl, referer);
@@ -289,7 +315,7 @@ async function resolveServerJson(playerUrl, referer) {
 
 async function resolveSelfPlayer(playerUrl, referer) {
   const r = await resolveServerJson(playerUrl, referer);
-  return r && r.kind === 'hls' ? { url: r.url, playerUrl: r.playerUrl, host: new URL(playerUrl).origin } : '';
+  return r && r.kind === 'hls' ? { url: r.url, playerUrl: r.playerUrl, host: originOf(playerUrl) } : '';
 }
 
 // 猫 detail 的 vod_play_from/vod_play_url → 线路组/tracks（playId 原样透传）

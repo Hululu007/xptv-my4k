@@ -7,6 +7,20 @@
 const HOST = 'https://11.bkskfhqdfas.icu';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+// 2026-11-19 三腿取数：用户手机直连 11.bkskfhqdfas.icu 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个可用结果胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+function parseJsonLoose(data) {
+    const s = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+    if (!s) return null;
+    try { const j = JSON.parse(s); return (j && typeof j === 'object') ? j : null; } catch (e) {}
+    const a = s.indexOf('{'); const b = s.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { const j = JSON.parse(s.slice(a, b + 1)); return (j && typeof j === 'object') ? j : null; } catch (e2) {} }
+    return null;
+}
+
 function headers() {
     return {
         'User-Agent': UA,
@@ -66,8 +80,18 @@ function parseIsoDur(s) {
 }
 
 async function getHtml(url) {
+    const h = headers();
     try {
-        const r = await $fetch.get(url, { headers: headers(), timeout: 20000 });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const r = await $fetch.get(url, { headers: h, timeout: 15000 });
         const d = r ? r.data : null;
         return typeof d === 'string' ? d : (d == null ? '' : JSON.stringify(d));
     } catch (e) {
@@ -76,8 +100,18 @@ async function getHtml(url) {
 }
 
 async function getJson(url) {
+    const h = headers();
     try {
-        const r = await $fetch.get(url, { headers: headers(), timeout: 20000 });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200) { const j = parseJsonLoose(r.data); if (j) return j; }
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, h, { 'x-respond-with': 'text' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200) { const j = parseJsonLoose(r.data); if (j) return j; }
+    } catch (e) {}
+    try {
+        const r = await $fetch.get(url, { headers: h, timeout: 15000 });
         const d = r ? r.data : null;
         if (d && typeof d === 'object') return d;
         const s = typeof d === 'string' ? d : '';

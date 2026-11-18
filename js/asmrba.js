@@ -1,8 +1,13 @@
 // ASMR吧 - XPTV csp 格式
 // 转换自 mira-cat nodejs/src/spider/video/asmrba.js
-const HOST = 'https://www.asmrba.com';
+// 2026-11-19 修：旧域 www.asmrba.com 已无 A 记录（DoH 查无 Answer，站已搬）；
+// 改走新域 https://www.ufov8.com（多家导航站同指该域；实测 WP API 200/41KB、首页 200）。
+// 取数：直连优先，失败走自家 site-fetch Worker 兜底（ufov8.com 待补进 SF 白名单，
+// 未补前 SF 腿回 400 自动跳过、不影响直连）。
+const HOST = 'https://www.ufov8.com';
 const API = HOST + '/wp-json/wp/v2';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36';
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 
 const appConfig = {
     ver: 1,
@@ -15,10 +20,19 @@ async function fetchText(url, headers) {
     try {
         const r = await $fetch.get(url, { headers: headers || { 'User-Agent': UA }, timeout: 20000 });
         const d = r ? r.data : null;
-        return typeof d === 'string' ? d : (d == null ? '' : JSON.stringify(d));
-    } catch (e) {
-        return '';
+        const s = typeof d === 'string' ? d : (d == null ? '' : JSON.stringify(d));
+        if (s) return s;
+    } catch (e) {}
+    // 兜底：site-fetch Worker（仅站内 API/页面；bilibili API 不走此腿）
+    if (url.indexOf(HOST) === 0) {
+        try {
+            const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers || { 'User-Agent': UA }, timeout: 15000 });
+            const d = r ? r.data : null;
+            const s = typeof d === 'string' ? d : (d == null ? '' : JSON.stringify(d));
+            if (s) return s;
+        } catch (e) {}
     }
+    return '';
 }
 
 async function fetchJson(url, headers) {
@@ -70,8 +84,7 @@ async function pagePosts(page, extra) {
 }
 
 async function getConfig() {
-    // 静态 tabs：站方 WP API VM 侧不可达（DNS 解析到 198.18.x.x 不可达地址，http/https 均 000），
-    // 现拉分类只会拖慢入口；分类以 1 个静态 tab 为准，站恢复后如需补分类再加。
+    // 静态 tabs：1 个最新更新 tab（站已搬 ufov8.com，WP API 通；分类按需再加）。
     return jsonify(appConfig);
 }
 
@@ -89,9 +102,25 @@ async function getCards(ext) {
 }
 
 // B站 playurl：qn 定档位；cid 漂移时用 view 接口取当前 cid 重试一次。
+// 2026-11-19：站方文章页的 Bilibili iframe 用短式 bvid 参数
+// （player.bilibili.com/player.html?bvid=1XCuezWEwr，无 BV 前缀），
+// 旧正则 /(BV[0-9A-Za-z]+)/ 抽不到、biliUrl/biliQualities 直接空。
+// 统一抽取：先取 bvid= 参数值，缺 BV 前缀则补上；再回落 BV 全串。
+function extractBvid(u) {
+    u = String(u || '').replace(/&amp;/g, '&');
+    let m = u.match(/[?&]bvid=([0-9A-Za-z]+)/);
+    if (m) {
+        let v = m[1];
+        if (v.indexOf('BV') !== 0) v = 'BV' + v;
+        return v;
+    }
+    m = u.match(/(BV[0-9A-Za-z]+)/);
+    return m ? m[1] : '';
+}
+
 async function biliUrl(u) {
     u = String(u || '').replace(/&amp;/g, '&');
-    const bvid = m(u, /(BV[0-9A-Za-z]+)/);
+    const bvid = extractBvid(u);
     if (!bvid) return '';
     let cid = m(u, /[?&]cid=(\d+)/);
     const qn = m(u, /[?&]qn=(\d+)/) || '64';
@@ -122,7 +151,7 @@ async function biliUrl(u) {
 const QN_LABEL = { 116: '1080p60', 80: '1080p', 64: '720p', 32: '480p' };
 async function biliQualities(u) {
     u = String(u || '').replace(/&amp;/g, '&');
-    const bvid = m(u, /(BV[0-9A-Za-z]+)/);
+    const bvid = extractBvid(u);
     if (!bvid) return null;
     let cid = m(u, /[?&]cid=(\d+)/);
     const headers = { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com/video/' + bvid + '/' };
@@ -155,12 +184,21 @@ async function getTracks(ext) {
     const p = await fetchJson(API + '/posts/' + encodeURIComponent(id) + '?_embed=1');
     if (!p || !p.id) return jsonify({ list: [] });
     const h = (p.content && p.content.rendered) || '';
+    // 2026-11-19：视频嵌在文章页 HTML 里（主题渲染的 Bilibili iframe，如
+    // //player.bilibili.com/player.html?bvid=...），WP API 的 content.rendered
+    // 只有文字+图片、没有视频。并取文章页（/<id>.html）补 iframe/直链。
+    let pageHtml = '';
+    try { pageHtml = await fetchText(HOST + '/' + encodeURIComponent(id) + '.html'); } catch (e) { pageHtml = ''; }
     const urls = [];
-    const re1 = /https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mp4)[^\s"'<>]*/g;
-    let mm;
-    while ((mm = re1.exec(h)) !== null) urls.push(mm[0]);
-    const re2 = /<iframe[^>]+src="([^"]+)"/g;
-    while ((mm = re2.exec(h)) !== null) urls.push(abs(HOST, mm[1]).replace(/&amp;/g, '&'));
+    const collect = (src) => {
+        const re1 = /https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mp4)[^\s"'<>]*/g;
+        let mm;
+        while ((mm = re1.exec(src)) !== null) urls.push(mm[0]);
+        const re2 = /<iframe[^>]+src="([^"]+)"/g;
+        while ((mm = re2.exec(src)) !== null) urls.push(abs(HOST, mm[1]).replace(/&amp;/g, '&'));
+    };
+    collect(h);
+    if (pageHtml) collect(pageHtml);
     const seen = {};
     const all = [];
     for (let i = 0; i < urls.length; i++) {

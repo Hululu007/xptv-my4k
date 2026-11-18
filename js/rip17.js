@@ -8,6 +8,12 @@ const SITE = 'https://17rip.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
 
+// 2026-11-19 三腿取数：用户手机直连 17rip.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 const CATS = [
     { type_id: '1', type_name: '日韩' },
     { type_id: '2', type_name: '国产' },
@@ -74,7 +80,16 @@ function fixUrl(u) {
 async function getHtml(url) {
     const headers = { 'User-Agent': UA, 'Referer': REFERER, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
     try {
-        const { data, status } = await $fetch.get(url, { headers });
+        const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const h2 = Object.assign({}, headers, { 'x-respond-with': 'html' });
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
+    try {
+        const { data, status } = await $fetch.get(url, { headers: headers, timeout: 15000 });
         if ((status === undefined || status === 200) && typeof data === 'string' && data) return data;
         if (typeof data === 'string' && data) return data;
     } catch (e) {}

@@ -748,11 +748,11 @@ function unb64url(s) {
 }
 
 function proxyUrl(reqIn, path, targetUrl, referer, payload, bare) {
+  // XPTV 里没有蜘蛛本地代理（js2p:// 是 MiraPlayer 猫源专属，XPTV 播放器不认，
+  // 点播一直转圈）。改走 javrate Worker v3 的 /m3u8（清单改写 + 分片现铸 token，
+  // 与猫版 /proxy/m3u8 同款逻辑，见 Worker 注释）。path 参数保留作兼容。
   try {
-    const server = reqIn?.server;
-    const dynamic = server?.address?.()?.dynamic || 'js2p://_WEB_';
-    const prefix = server?.prefix || ('/spider/' + KEY + '/3');
-    let u = `${dynamic}${prefix}${path}?u=${b64url(targetUrl)}&r=${b64url(referer || '')}`;
+    let u = `${RELAY}/m3u8?u=${b64url(targetUrl)}&r=${b64url(referer || '')}`;
     if (payload) u += '&p=' + b64url(payload);
     if (bare) u += '&b=' + b64url(bare);
     return u;

@@ -1,18 +1,34 @@
 // 818黑料网 - XPTV csp 格式（csp_818hl）
-// 转换自 mira-cat nodejs/src/spider/video/hl818.js（py_818hl）。站点 https://cell.lacdfsq.cc/
+// 转换自 mira-cat nodejs/src/spider/video/hl818.js（py_818hl）。
+// 2026-11-19 修：旧域 cell.lacdfsq.cc 已 NXDOMAIN（站方子域名无 A 记录，站已搬）；
+// 改走站方自报永久地址 818hlw1.com（实测直出 30 篇）。/latest/ 与 /hot/ 是站内
+// 404 样式页、不可用，tabs 改用站内导航实测的 12 个 /category/ 分类（与猫版一致）。
+// 取数双腿（照猫版）：直连（App 侧常被 CF 按出口指纹拦，5s 快失败）→
+// javsb-relay /hl?url= 中转（白名单仅 818hlw1.com，实测首页/分类均 200/30 篇）。
 // 封面走 bagua-img-proxy 解密代理出图（纯字符串拼接，原样保留）。
 // 播放：dplayer 直链 parse:0 直出；仅有观看链接时为网页 URL（嗅探型播放降级：回源页 URL，待真机验）。
-const HOST = 'https://cell.lacdfsq.cc/';
+const HOST = 'https://818hlw1.com/';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const IMG_PROXY = 'https://bagua-img-proxy.li768435813.workers.dev/img?url=';
+const RELAY_HL = 'https://javsb-relay.li768435813.workers.dev/hl?url=';
 
 const appConfig = {
     ver: 1,
     title: '818黑料网',
     site: HOST,
     tabs: [
-        { name: '最新', ext: { tid: '/latest/' } },
-        { name: '热门', ext: { tid: '/hot/' } },
+        { name: '今日吃瓜', ext: { tid: '/category/jrcg/' } },
+        { name: '热门大瓜', ext: { tid: '/category/rmdg/' } },
+        { name: '每日大赛', ext: { tid: '/category/mrds/' } },
+        { name: '反差网黄', ext: { tid: '/category/fcwh/' } },
+        { name: '家庭乱伦', ext: { tid: '/category/jtll/' } },
+        { name: '撸管必备', ext: { tid: '/category/lgbb/' } },
+        { name: '猎奇大赏', ext: { tid: '/category/lqds/' } },
+        { name: '街拍流出', ext: { tid: '/category/jplc/' } },
+        { name: 'AI短剧', ext: { tid: '/category/aidj/' } },
+        { name: '学生校园', ext: { tid: '/category/xsxy/' } },
+        { name: '明星黑料', ext: { tid: '/category/mxhl/' } },
+        { name: '海外吃瓜', ext: { tid: '/category/hwcg/' } },
     ],
 };
 
@@ -34,13 +50,25 @@ function proxyCover(url) {
     return IMG_PROXY + encodeURIComponent(url);
 }
 
+function isRealPage(html) {
+    const s = String(html || '');
+    return s.indexOf('818黑料网') >= 0 && (s.indexOf('/category/') >= 0 || s.indexOf('/archives/') >= 0);
+}
+
 async function getText(url) {
+    // ① 直连（5s 快失败：App 侧常被 CF 按出口指纹拦，挂满超时拖垮取数）
     try {
-        const { data } = await $fetch.get(url, { headers: H() });
-        return typeof data === 'string' ? data : String(data || '');
-    } catch (e) {
-        return '';
-    }
+        const { data } = await $fetch.get(url, { headers: H(), timeout: 5000 });
+        const t = typeof data === 'string' ? data : String(data || '');
+        if (isRealPage(t)) return t;
+    } catch (e) {}
+    // ② javsb-relay /hl 中转（10s）
+    try {
+        const { data } = await $fetch.get(RELAY_HL + encodeURIComponent(url), { headers: H(), timeout: 10000 });
+        const t = typeof data === 'string' ? data : String(data || '');
+        if (isRealPage(t)) return t;
+    } catch (e) {}
+    return '';
 }
 
 function imgOf(html) {
@@ -128,8 +156,7 @@ function buildGroups(vod) {
 }
 
 async function getConfig() {
-    // 静态 tabs：站方首页 VM 侧不可达（DNS 解析到 198.18.x.x 不可达地址，http/https 均 000），
-    // 现拉分类只会拖慢/拖垮入口；分类以文件内 2 个静态 tab 为准，站恢复后如需补分类再加。
+    // 静态 tabs：12 个站内导航实测分类（2026-11-19，818hlw1.com 首页导航）。
     return jsonify(appConfig);
 }
 

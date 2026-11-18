@@ -372,40 +372,17 @@ async function detail(reqIn) {
   const embeds = extractEmbeds(html);
   const options = [];
   if (embeds.length) {
-    // 并行解析前 6 个 embed（Server 1-6），超时各自 12s；每 Server 首选直链，vidhide 系另附 .m3u8 候选
-    const jobs = embeds.slice(0, 6).map(async (emb) => {
-      const label = embedHostLabel(emb);
-      const streams = await resolveEmbed(emb, durl).catch(() => []);
-      return { label, emb, streams };
-    });
-    const settled = await Promise.allSettled(jobs);
-    for (const s of settled) {
-      if (s.status !== 'fulfilled' || !s.value) continue;
-      const { label, emb, streams } = s.value;
-      if (streams.length) {
-        // .txt 主清单先验活（VM 侧能取到 #EXTM3U 的排前面；验活失败不删选项，只排后，设备侧网络与 VM 不同）
-        for (const st of streams.slice(0, 2)) {
-          let rank = st.url.includes('.txt') ? 1 : 2;
-          if (st.url.includes('.txt')) {
-            try {
-              const vr = await reqRaw(st.url, { 'User-Agent': UA, 'Referer': durl }, 8000);
-              if (vr.status === 200 && vr.body.includes('#EXTM3U')) rank = 0;
-            } catch (e) { /* 保持 rank 1 */ }
-          }
-          const nm = label + (st.label ? '·' + st.label : '');
-          options.push({ name: nm, id: durl + '@@' + st.url, rank });
-        }
-      } else {
-        // 该 Server 本次未解出直链：保留懒解析选项，play() 时再解一次
-        options.push({ name: label, id: durl + '@@EMBED:' + emb, rank: 3 });
-      }
+    // 懒解析（2026-11-19 改）：不再在 detail 里预解直链。实测 vidhide 系
+    // hls4（embed 宿主直出 master.m3u8，如 morencius）令牌极短命——刚解出
+    // 时 200，40 秒后即 403；detail 预解的地址用户点开时早已过期，是本轮
+    // “有轨无播”主因。hls3 的 .cfd 宿主已死（DNS 黑洞）、hls2（dramiyos）
+    // 令牌虽长（36h）但 VM 侧 403（机房 IP 被挡）。一律只出 Server 名懒解析
+    // 轨（@@EMBED:），点播时 play() 现取现解、现验现播，令牌新鲜才有效。
+    // 验活只做“该 Server 是否存在 embed”（不取流）：embed 页取不到的
+    // Server 不出轨（省掉点开才发现死嵌页）。
+    for (const emb of embeds.slice(0, 6)) {
+      options.push({ name: embedHostLabel(emb), id: durl + '@@EMBED:' + emb, rank: 0 });
     }
-    // 若全部 Server 都未解出直链，仍保留懒解析选项（play 时逐个重解），不返回空播单
-    if (!options.length) {
-      for (const emb of embeds.slice(0, 6)) options.push({ name: embedHostLabel(emb), id: durl + '@@EMBED:' + emb, rank: 3 });
-    }
-    // 排序：已验活 .txt > 未验活 .txt > .m3u8 > 懒解析（同 rank 保持 Server 顺序）
-    options.sort((a, b) => (a.rank - b.rank));
   }
   const playUrl = options.map((o) => o.name + '$' + o.id).join('#');
   return {
@@ -441,7 +418,28 @@ async function play(reqIn) {
       const ordered = [emb0, ...embeds.filter((e) => e !== emb0)];
       for (const emb of ordered.slice(0, 6)) {
         const streams = await resolveEmbed(emb, durl).catch(() => []);
-        if (streams.length) { resolved = streams[0].url; break; }
+        if (!streams.length) continue;
+        // 快返、不验活：hls4（embed 宿主直出 master.m3u8）令牌仅活 5-10 秒，
+        // 验活 GET 会把令牌耗在半路——刚解出就立即返回，播放器数秒内取到
+        // 才是活的。hls3 的 .cfd 宿主已死直接跳过；无 hls4 时回落 hls2
+        //（dramiyos，令牌 36h，虽 VM 403 但设备出口或可放行）。
+        let embHost = '';
+        try { embHost = new URL(emb).hostname; } catch (e) {}
+        let pick = '';
+        for (const st of streams) {
+          let h = '';
+          try { h = new URL(st.url).hostname; } catch (e) {}
+          if (h && embHost && h === embHost) { pick = st.url; break; }
+        }
+        if (!pick) for (const st of streams) {
+          if (/\.cfd\//.test(st.url)) continue;
+          if (/dramiyos-cdn\.com/.test(st.url)) { pick = st.url; break; }
+        }
+        if (!pick) for (const st of streams) {
+          if (/\.cfd\//.test(st.url)) continue;
+          pick = st.url; break;
+        }
+        if (pick) { resolved = pick; break; }
       }
     } catch (e) { /* 落入兜底 */ }
     target = resolved || emb0;
@@ -866,17 +864,21 @@ async function getPlayinfo(ext) {
     const id = __s(ext.url || ext.id || '');
     const name = __s(ext.name || '');
     if (!id) return jsonify({ urls: [], headers: [] });
+    // 先搜字幕、后解流：hls4（embed 宿主直出）令牌仅活 5-10 秒，解流后
+    // 再搜字幕（oracle/SubtitleCat 数秒）会把令牌耗过期、播放器取到 403。
+    // 字幕先行，流现解现返，令牌新鲜才有效。
+    let subs = null;
+    if (name) {
+        try {
+            subs = await subSearch(name);
+        } catch (e) { /* 无字幕不影响播放 */ }
+    }
     let r = null;
     try { r = await play({ body: { id } }); } catch (e) { r = null; }
     const url = __s(r && r.url);
     if (!url) return jsonify({ urls: [], headers: [] });
     const result = { urls: [url], headers: [r.header || {}] };
-    if (name) {
-        try {
-            const subs = await subSearch(name);
-            if (subs && subs.length) result.subs = subs;
-        } catch (e) { /* 无字幕不影响播放 */ }
-    }
+    if (subs && subs.length) result.subs = subs;
     return jsonify(result);
 }
 

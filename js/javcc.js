@@ -22,7 +22,27 @@ const HOST = 'https://javcc.me';
 const WORKER = 'https://javcc-hls.li768435813.workers.dev';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+// 2026-11-19 三腿取数：用户手机直连 javcc.me 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+// 只用于 javcc.me 本站页（列表/分类/搜索/详情）；videplay 嵌页与播单不在 site-fetch 白名单，走原直连。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function looksRealHtml(t) {
+    return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
+}
+
 async function getText(url, referer, timeoutMs) {
+    const u = String(url || '');
+    if (u.indexOf(HOST) === 0) {
+        const h = { 'User-Agent': UA, 'Referer': referer || HOST + '/' };
+        try {
+            const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(u), { headers: h, timeout: 12000 });
+            if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+        } catch (e) {}
+        try {
+            const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+            const r = await $fetch.get('https://r.jina.ai/' + u, { headers: h2, timeout: 20000 });
+            if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+        } catch (e) {}
+    }
     try {
         const r = await $fetch.get(url, {
             headers: { 'User-Agent': UA, 'Referer': referer || HOST + '/' },

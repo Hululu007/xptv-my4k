@@ -44,6 +44,11 @@ const HOST = 'https://www.bestjavporn.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const REFERER = HOST + '/';
 const OWN_FETCH = 'https://pornfhd-fetch.li768435813.workers.dev';
+// 通用取数中转 site-fetch (用户自有 Cloudflare Worker v6, 白名单含
+// www.bestjavporn.com；2026-11-19 加：站方 CF 墙间歇性拦 VM/CF 出口，
+// 多一个边缘出口多一路；站方 CF 挑战时 Worker 也拿不到正文，
+// 该腿失败即落到下一腿，不阻塞直连通路）
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 
 // 分类表: 逐字沿用猫版 CATS (精选分类/片商/标签共 477 个, type_id 为站方规范路径含 /v{n}/ 前缀)。
 const CATS = [
@@ -2172,6 +2177,9 @@ async function chAoRaw(url) {
 async function chCodetabs(url) {
     return rawReq('https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url), { 'User-Agent': UA });
 }
+async function chSiteFetch(url) {
+    return rawReq(SITE_FETCH + '/?u=' + encodeURIComponent(url), { 'User-Agent': UA });
+}
 
 // 串行取页: 猫版竞速波次改串行逐通道试, 首个合格即回 {html, win}。
 // list/detail 波次: own -> direct -> demo -> jina -> aoRaw -> codetabs -> jina 再试。
@@ -2185,6 +2193,7 @@ async function fetchPage(url, opts) {
     if (opts.profile === 'embed') {
         wave = [
             ['direct', () => chDirect(url, referer)],
+            ['sitefetch', () => chSiteFetch(url)],
             ['own', () => chOwn(url, referer)],
             ['demo', () => chDemo(url)],
             ['jina', () => chJina(url)],
@@ -2194,6 +2203,7 @@ async function fetchPage(url, opts) {
         wave = [
             ['own', () => chOwn(url, referer)],
             ['direct', () => chDirect(url, referer)],
+            ['sitefetch', () => chSiteFetch(url)],
             ['demo', () => chDemo(url)],
             ['jina', () => chJina(url)],
             ['aoRaw', () => chAoRaw(url)],

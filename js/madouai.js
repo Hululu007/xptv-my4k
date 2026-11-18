@@ -22,6 +22,17 @@ const HOST = 'https://madouai.xyz';
 const HOST2 = 'https://2048ai.xyz';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+// 2026-11-19 三腿取 JSON：用户手机直连 madouai.xyz/2048ai.xyz 失败（VM 全通）；site-fetch Worker 腿（JSON 以文本回传）→ 直连两域，首个可解析 JSON 胜出。
+const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
+function parseJsonLoose(data) {
+  const s = typeof data === 'string' ? data : (data == null ? '' : JSON.stringify(data));
+  if (!s) return null;
+  try { const j = JSON.parse(s); return (j && typeof j === 'object') ? j : null; } catch (e) {}
+  const a = s.indexOf('{'); const b = s.lastIndexOf('}');
+  if (a >= 0 && b > a) { try { const j = JSON.parse(s.slice(a, b + 1)); return (j && typeof j === 'object') ? j : null; } catch (e2) {} }
+  return null;
+}
+
 // 分类: 最近更新(无 categoryId, 默认最新在前) + 23 个视频子分类 (GET /api/v1/categories?type=video 实测)
 // 注意: 前端 3 个菜单组 (原创精选/国产视频/中文AV) 只是导航分组, API 不认 menuId 参数,
 // 无法按菜单组取列表, 故不单列菜单组分类, 子分类本身已按 menuId 归属, 浏览子分类即可覆盖
@@ -65,9 +76,18 @@ function t(v) {
   return String(v == null ? '' : v).trim();
 }
 
-/** JSON 取数: 先 req, 失败换备用域, 再失败走 fetch 兜底 (App 内无全局 fetch, 用 typeof 守卫) */
+/** JSON 取数: 先 site-fetch Worker 腿（两域）, 再直连两域, 再失败走 fetch 兜底 (App 内无全局 fetch, 用 typeof 守卫) */
 async function apiGet(path) {
   const hosts = [HOST, HOST2];
+  for (const h of hosts) {
+    try {
+      const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(h + path), { headers: headers(), timeout: 12000 });
+      if (r && r.status === 200) {
+        const j = parseJsonLoose(r.data);
+        if (j) return j;
+      }
+    } catch (e) { /* try next leg */ }
+  }
   for (const h of hosts) {
     try {
       const { data } = await $fetch.get(h + path, { headers: headers(), timeout: 20000 });
