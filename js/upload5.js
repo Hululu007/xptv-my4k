@@ -9,10 +9,117 @@
 // 解析失败时猫版落 parse:1 嗅探 missav 页，XPTV 无嗅探位，降级为回 missav 页 URL ——
 // 嗅探型播放降级：回源页 URL，待真机验 XPTV 是否嗅探非媒体 URL。
 // play 末尾的 HEAD 跟跳（猫版用原生 fetch HEAD）$fetch 无 HEAD 接口，跳过该步直返 API 地址，待真机验。
-// 2026-10-22 本地验证状态：站方握手 PoW 被持续拒收——按猫版算法逐字复刻的独立脚本多次尝试（换 dev 3 次 + 同 dev 连解 5 轮）
-// 均只拿到新 challenge、从未下发 sid/skey（响应无 Set-Cookie），harness 因此 cards/search 全 0；模块逻辑为猫版忠实移植，
-// 定性为站方/出口 IP 侧状态，待真机或换网络环境再验。
-const CryptoJS = createCryptoJS();
+// 2026-11-19 根因修复: 设备侧全空。猫版同款全走 mitao-handshake Worker 时
+// harness 22 分类全通、真机仍全空。两个运行时未证实件是唯二嫌疑, 现全部改纯 JS:
+// ① new URLSearchParams —— uu_video/march 已证实运行时未证实、改手工拼 query,
+//    本文件是全仓唯一还在调它的, signedGet 首行即抛错致 getCards 全空;
+// ② createCryptoJS 的 HmacSHA256 —— 全仓唯一用 HMAC 的文件, 改纯 JS SHA-256/HMAC
+//    (已对 Node crypto 验过向量), 空串 SHA256 直接用常量。改后本文件零未证实依赖。
+const EMPTY_SHA256_HEX = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+// ---------------- 纯 JS SHA-256 / HMAC-SHA-256 / hex 件 (无 CryptoJS/Buffer) ----------------
+const SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+const SHA256_H0 = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+function hpRotr(x, n) { return ((x >>> n) | (x << (32 - n))) >>> 0; }
+function hpSha256Bytes(msgBytes) {
+  const ml = msgBytes.length;
+  const bitLenHi = Math.floor((ml / 0x20000000) | 0);
+  const bitLenLo = (ml << 3) >>> 0;
+  const paddedLen = (((ml + 9 + 63) >> 6) << 6);
+  const m = new Uint8Array(paddedLen);
+  m.set(msgBytes);
+  m[ml] = 0x80;
+  const dv = new DataView(m.buffer);
+  dv.setUint32(paddedLen - 8, bitLenHi);
+  dv.setUint32(paddedLen - 4, bitLenLo);
+  let h0 = SHA256_H0[0], h1 = SHA256_H0[1], h2 = SHA256_H0[2], h3 = SHA256_H0[3],
+      h4 = SHA256_H0[4], h5 = SHA256_H0[5], h6 = SHA256_H0[6], h7 = SHA256_H0[7];
+  const w = new Uint32Array(64);
+  for (let off = 0; off < paddedLen; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = (hpRotr(w[i - 15], 7) ^ hpRotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) >>> 0;
+      const s1 = (hpRotr(w[i - 2], 17) ^ hpRotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)) >>> 0;
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = (hpRotr(e, 6) ^ hpRotr(e, 11) ^ hpRotr(e, 25)) >>> 0;
+      const ch = ((e & f) ^ (~e & g)) >>> 0;
+      const t1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = (hpRotr(a, 2) ^ hpRotr(a, 13) ^ hpRotr(a, 22)) >>> 0;
+      const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  }
+  const out = new Uint8Array(32);
+  const od = new DataView(out.buffer);
+  od.setUint32(0, h0); od.setUint32(4, h1); od.setUint32(8, h2); od.setUint32(12, h3);
+  od.setUint32(16, h4); od.setUint32(20, h5); od.setUint32(24, h6); od.setUint32(28, h7);
+  return out;
+}
+function hpUtf8Bytes(s) {
+  const str = String(s || '');
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let cp = str.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return Uint8Array.from(out);
+}
+function hpBytesToHex(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += ('0' + bytes[i].toString(16)).slice(-2);
+  return s;
+}
+function hpHexToBytes(hex) {
+  const h = String(hex || '').replace(/[^0-9a-fA-F]/g, '');
+  const out = new Uint8Array(Math.floor(h.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+  return out;
+}
+function hpHmacSha256Hex(keyBytes, msgStr) {
+  let k = keyBytes;
+  if (k.length > 64) k = hpSha256Bytes(k);
+  const kb = new Uint8Array(64);
+  kb.set(k);
+  const ipad = new Uint8Array(64), opad = new Uint8Array(64);
+  for (let i = 0; i < 64; i++) { ipad[i] = kb[i] ^ 0x36; opad[i] = kb[i] ^ 0x5c; }
+  const msg = hpUtf8Bytes(msgStr);
+  const inner = new Uint8Array(64 + msg.length);
+  inner.set(ipad); inner.set(msg, 64);
+  const innerHash = hpSha256Bytes(inner);
+  const outer = new Uint8Array(64 + 32);
+  outer.set(opad); outer.set(innerHash, 64);
+  return hpBytesToHex(hpSha256Bytes(outer));
+}
+// 手工拼 query (与 URLSearchParams 同语义: 键序保留、值 encodeURIComponent; 运行时未证实有 URLSearchParams, 不用它)
+function hpBuildQuery(params) {
+  const parts = [];
+  const obj = params || {};
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v === undefined || v === null) continue;
+    parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(v)));
+  }
+  return parts.join('&');
+}
 
 const HOST = 'https://honeypeach.cc';
 const UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
@@ -188,12 +295,12 @@ function createSession() {
 
     async function signedGet(path, params) {
         if (!(await ensureHandshake())) return {};
-        const qs = new URLSearchParams(params || {}).toString();
-        const bodyHash = CryptoJS.SHA256('').toString(CryptoJS.enc.Hex);
+        const qs = hpBuildQuery(params);
+        const bodyHash = EMPTY_SHA256_HEX;
         const ts = String(Math.floor(Date.now() / 1000));
         const nonce = rnd(8) + Date.now().toString(16);
         const canon = ['GET', path, qs, bodyHash, ts, nonce, sess.sid].join('\n');
-        const sig = CryptoJS.HmacSHA256(canon, CryptoJS.enc.Hex.parse(sess.skey)).toString(CryptoJS.enc.Hex);
+        const sig = hpHmacSha256Hex(hpHexToBytes(sess.skey), canon);
         const url = HOST + path + (qs ? '?' + qs : '');
         const res = await hsFetchJson(url, {
             'X-Hp-Sid': sess.sid,
