@@ -1375,6 +1375,51 @@ async function vetVidhide(embedUrl) {
   return 'unknown';
 }
 
+// ===== VidHide 设备侧直解 (2026-11-19: Worker /v 已死) =====
+// hls2 的 token 绑取嵌页那次请求的 IP；Worker 的 CF 出口取 hls2 播单回 403
+// （实测 "no playable playlist. links=[hls2] attempts=hls2:403"），故 Worker 全链已死。
+// 只有播放器本机能解出可用地址：本机直取嵌页（token 绑本机 IP）→ 解包 →
+// 取 hls2 master 直出；hls4 是 TikTok 广告图诱饵，绝不用。
+function extractVidhideLinks(text) {
+  const links = {};
+  const src = String(text || '');
+  let m;
+  const re = /"hls(\d+)"\s*:\s*"([^"]+)"/g;
+  while ((m = re.exec(src)) !== null) links['hls' + m[1]] = m[2];
+  if (!Object.keys(links).length) {
+    const f = src.match(/"file"\s*:\s*"(https?:[^"]+\.m3u8[^"]*)"/) || src.match(/(https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*)/);
+    if (f) links.hls2 = f[1];
+  }
+  return links;
+}
+function absFrom(u, base) {
+  u = String(u || '').trim();
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;
+  if (u.startsWith('//')) return 'https:' + u;
+  const o = String(base || '').match(/^(https?:\/\/[^\/]+)/i);
+  if (u.startsWith('/')) return (o ? o[1] : '') + u;
+  return (o ? o[1] + '/' : '') + u;
+}
+async function resolveVidhideDevice(embedUrl) {
+  // 必须直取嵌页（不能走 Worker 中转，否则 token 绑到中转 IP 上，播放器本机拉流必被 CDN 拒绝）
+  let html = '';
+  try {
+    const { text, status } = await getRaw(embedUrl, { Referer: REFERER }, 12000);
+    if (status === 200 && text) html = text;
+  } catch (e) { return ''; }
+  if (!html) return '';
+  const unpacked = unpackDeanEdwards(html);
+  const links = extractVidhideLinks(unpacked || html);
+  for (const key of ['hls2', 'hls3']) {
+    const raw = links[key];
+    if (!raw) continue;
+    const abs = absFrom(raw, embedUrl);
+    if (/\.m3u8/i.test(abs)) return abs;
+  }
+  return '';
+}
+
 // ===== StreamCash 直连解析 (与第二轮相同, 实拉验通) =====
 // files = "MD5(user IP)" -> /pass/{file} 是 IP 绑定一次性直链,
 // 必须由设备侧在 play 时现场铸造, 故 s: 延到 play 才解。
@@ -1746,8 +1791,16 @@ async function getPlayinfo(ext) {
   const kind = body.slice(0, 2);
   const target = body.slice(2);
   const headers = { 'User-Agent': UA, 'Referer': REFERER };
-  // vidhide 线: 全链走 Worker 代理 (parse:0 直出)
+  // vidhide 线: 设备侧直解优先（hls2 token 绑本机 IP；Worker /v 取 hls2 回 403 已死），
+  // 设备侧失败才回落 Worker /v（旧链路，偶尔仍可用）。
   if (kind === 'w:' && /^https?:\/\//.test(target)) {
+    const direct = await resolveVidhideDevice(target);
+    if (direct) {
+      return jsonify({
+        urls: [direct],
+        headers: [{ 'User-Agent': UA, 'Referer': target }],
+      });
+    }
     return jsonify({
       urls: [BBH_WORKER + '/v?u=' + encodeURIComponent(target)],
       headers: [{ 'User-Agent': UA, 'Referer': BBH_WORKER + '/' }],
