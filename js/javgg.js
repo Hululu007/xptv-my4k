@@ -4,7 +4,11 @@
 // javgg-vidhide Worker 中转结构上已死（CF 出口被 hls2 CDN 切断，/v 回 502）。
 // getPlayinfo 直取嵌页 → 纯字符串解 Dean Edwards 包 → 取 hls2 master 直出
 // （hls3 备选，hls4 绝不用——TikTok 广告图诱饵）。playmate/vidara 仍优先直解。
-// $fetch.post 待真机验（本地 harness 已实测请求真能通）：playmate/vidara 的 POST JSON 逐字保持猫侧线格式。
+// 2026-11-19 根因修复: playmate/vidara 的 POST 一直传对象 body，harness 的
+// fetchWrap 会自动 JSON.stringify 对象体、真机 $fetch.post 不会（对象体到
+// fetch 会抛错/发成 "[object Object]"），致两条优先线路设备侧恒失败。
+// 现 postJson 内统一 stringify（与 av01.js 同法）。另补 URL 兜底（与
+// javhdporn.js 同款，部分沙箱无 URL 全局）。
 // 嗅探型播放降级：回源页 URL，待真机验 —— 猫版 parse:1 嗅探（vidhide 无 Worker 时 / f4 / other / 无线路时回详情页）
 // 在 XPTV 无嗅探位，降级为 urls:[embed/详情页 URL]。
 // 猫版竞速（bestWithin/settleWithin + setTimeout 宽限/预算）按规范改串行：playmate/vidara 按优先级顺序逐个试；
@@ -14,6 +18,34 @@
 const SITE = 'https://javgg.net';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
+
+// URL 全局缺失时的最小兜底 (与 javhdporn.js 同款): 部分 JS 沙箱不提供 URL,
+// 本文件多处用 new URL 取 hostname/pathname, 无 URL 时那些分支会静默失效。
+// 真实运行时已有 URL 时此段不生效。
+if (typeof URL === 'undefined') {
+    var URL = function (u, base) {
+        let s = String(u || '');
+        if (base && !/^[a-z][a-z0-9+.-]*:/i.test(s)) {
+            const b = String(base);
+            if (s.slice(0, 2) === '//') { s = 'https:' + s; }
+            else if (s.charAt(0) === '/') { const m0 = b.match(/^(https?:\/\/[^\/]+)/i); s = (m0 ? m0[1] : '') + s; }
+            else { s = b.replace(/[^\/]*$/, '') + s; }
+        }
+        if (s.slice(0, 2) === '//') s = 'https:' + s;
+        const m = s.match(/^(https?:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/i);
+        if (!m) throw new Error('Invalid URL');
+        this.protocol = (m[1] || 'https:').toLowerCase();
+        this.hostname = (m[2] || '').toLowerCase();
+        this.port = m[3] || '';
+        this.pathname = m[4] || '/';
+        this.search = m[5] || '';
+        this.hash = m[6] || '';
+        this.host = this.hostname + (this.port ? ':' + this.port : '');
+        this.origin = this.protocol + '//' + this.host;
+        this.href = s;
+        this.toString = function () { return this.protocol + '//' + this.host + this.pathname + this.search + this.hash; };
+    };
+}
 
 const CATS = [
   { type_id: 'latest', type_name: '最新', kind: 'path', url: '/new-post/' },
@@ -210,8 +242,11 @@ async function getText(url, headers, minLen) {
 
 async function postJson(url, body, headers) {
     const h = { 'User-Agent': UA, 'Content-Type': 'application/json', 'Accept': 'application/json', 'Referer': REFERER, ...(headers || {}) };
+    // body 必须是字符串: harness 会自动 JSON.stringify 对象体, 真机 $fetch.post
+    // 不会 (对象体到 fetch 会抛错/发成 "[object Object]"), 故这里统一 stringify。
+    const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
     try {
-        const { data, status } = await $fetch.post(url, body, { headers: h });
+        const { data, status } = await $fetch.post(url, bodyStr, { headers: h });
         if ((status === undefined || status === 200) && data) {
             return typeof data === 'string' ? JSON.parse(data) : data;
         }
