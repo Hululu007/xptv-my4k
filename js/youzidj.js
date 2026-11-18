@@ -1,16 +1,17 @@
 // 柚子短剧 - XPTV csp 格式（csp_youzidj）
 // 转换自 mira-cat nodejs/src/spider/video/youzidj.js（py_youzidj），站点 https://youzidj.com
-// 播放主链（同猫版，补上猫版缺的年龄确认）：POST /api/account/bootstrap 建访客会话（JSON 对象 body）→
-// POST /age-check（表单 decision=accepted，带 Origin + Sec-Fetch 头）取年龄确认 cookie →
-// POST /api/playback/{videoId}?mode=native 换流地址（相对路径 /media/.../native-current.mp4，
-// 站方 307 跳到 master.m3u8），三步的 cookie（访客 + 年龄 + 播放）都带在播放头里。
-// 注意：年龄确认只在 303 跳转响应里 Set-Cookie，$fetch 须回 303 原响应（opts 带 redirect:'manual'）才能取到；
-// 若运行时的 $fetch 强制跟随跳转、取不到该 cookie，播放会 403，只能走 Worker 中转（见下）。
+// 播放（2026-11-19 改走 youzidj-play Worker）：设备侧 $fetch 跟随跳转且不回传
+// Set-Cookie，永远拿不到 303 里的 eden_age_*，playback 恒 403；且媒体本身也要
+// cookie、播放器又不把 getPlayinfo 的 header 转发给分片请求。故由 Worker 代走
+// 全链（bootstrap -> age-check -> playback）并代理媒体流（单文件渐进 MP4，
+// 支持 Range，Worker 透传）。模块只负责从集页取 data-video UUID + 验价，
+// getPlayinfo 直接回 Worker /stream 地址，不再做设备侧握手。
+// Worker 已部署验通：Range 206 真 MP4（ftypiso5），整文件 200，seek 的 Range 也 206。
 // 拿不到流返回空，绝不回集页面地址。
-// $fetch.post 待真机验（本地 harness 已实测请求真能通）。
 const SITE = 'https://youzidj.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
+const PLAY_WORKER = 'https://youzidj-play.li768435813.workers.dev';
 
 // 2026-11-19 三腿取数：用户手机直连 youzidj.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
 // 注意：只改列表/详情/搜索的 GET 取页。会话类 POST（bootstrap / age-check / playback）带 cookie，
@@ -44,9 +45,6 @@ const appConfig = {
     tabs: CATS.map(([tid, name]) => ({ name, ext: { tid } })),
 };
 
-let accountPair = '';
-let agePair = '';
-
 function t(v) {
     return String(v == null ? '' : v).trim();
 }
@@ -77,82 +75,6 @@ async function getHtml(url) {
     try {
         const { data, status } = await $fetch.get(url, { headers: headers, timeout: 15000 });
         if ((status === undefined || status === 200) && typeof data === 'string' && data) return data;
-    } catch (e) {}
-    return '';
-}
-
-// POST JSON 接口：返回 { status, data, setCookie[] }；setCookie 尽力从响应头各形态里取（运行时未证实回传）
-async function postJson(url, referer, cookie) {
-    const headers = {
-        'User-Agent': UA,
-        'Referer': referer || REFERER,
-        'Origin': SITE,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-    };
-    if (cookie) headers['Cookie'] = cookie;
-    try {
-        const r = await $fetch.post(url, {}, { headers: headers });
-        let data = r.data;
-        if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) { data = null; } }
-        let sc = [];
-        const h = r.headers || r.header || {};
-        const raw = h['set-cookie'] || h['Set-Cookie'] || (typeof h.getSetCookie === 'function' ? h.getSetCookie() : null) || (typeof h.get === 'function' ? h.get('set-cookie') : null);
-        if (raw) sc = Array.isArray(raw) ? raw : [raw];
-        return { status: r.status || 200, data: data, setCookie: sc };
-    } catch (e) {
-        return { status: 0, data: null, setCookie: [] };
-    }
-}
-
-function pickCookie(setCookie, namePrefix) {
-    for (const line of setCookie || []) {
-        const m = String(line).match(new RegExp('^(' + namePrefix + '[^=]*)=([^;]+)'));
-        if (m) return { name: m[1], value: m[2], pair: m[1] + '=' + m[2] };
-    }
-    return null;
-}
-
-async function ensureAccount(force) {
-    if (!force && accountPair) return accountPair;
-    const r = await postJson(SITE + '/api/account/bootstrap', REFERER, '');
-    const c = pickCookie(r.setCookie, 'eden_account');
-    if (c) {
-        accountPair = c.pair;
-        return accountPair;
-    }
-    return accountPair || '';
-}
-
-// 年龄确认：POST /age-check 表单，成功 303 + Set-Cookie 年龄确认 cookie。
-// 该 cookie 只在 303 响应里出现：opts 带 redirect:'manual'，让 $fetch 回 303 原响应而非跟随跳转；
-// 若运行时强制跟随跳转、取不到该 cookie，播放会 403，只能走 Worker 中转。
-async function ensureAge(epUrl, acct, force) {
-    if (!force && agePair) return agePair;
-    let path = '/';
-    try { path = new URL(epUrl).pathname; } catch (e) {}
-    const body = 'return_to=' + encodeURIComponent(path) + '&decision=accepted';
-    const headers = {
-        'User-Agent': UA,
-        'Referer': epUrl,
-        'Origin': SITE,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Dest': 'document',
-    };
-    if (acct) headers['Cookie'] = acct;
-    try {
-        const r = await $fetch.post(SITE + '/age-check', body, { headers: headers, redirect: 'manual' });
-        const h = r.headers || r.header || {};
-        const raw = h['set-cookie'] || h['Set-Cookie'] || (typeof h.getSetCookie === 'function' ? h.getSetCookie() : null) || (typeof h.get === 'function' ? h.get('set-cookie') : null);
-        const sc = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-        const c = pickCookie(sc, 'eden_age_');
-        if (c) {
-            agePair = c.pair;
-            return agePair;
-        }
     } catch (e) {}
     return '';
 }
@@ -288,32 +210,11 @@ async function getPlayinfo(ext) {
     const price = pm ? pm[1] : '0';
     if (price !== '0') return empty();
 
-    let acct = await ensureAccount(false);
-    let age = await ensureAge(epUrl, acct, false);
-    if (!acct || !age) return empty();
-
-    const playOnce = async (cookie) => {
-        return postJson(SITE + '/api/playback/' + videoId + '?mode=native', epUrl, cookie);
-    };
-    let r = await playOnce([acct, age].filter(Boolean).join('; '));
-    if (r.status === 401) {
-        acct = await ensureAccount(true);
-        r = await playOnce([acct, age].filter(Boolean).join('; '));
-    }
-    if (r.status === 403) {
-        // 年龄确认过期/失效：重做一次年龄确认再试
-        age = await ensureAge(epUrl, acct, true);
-        if (!age) return empty();
-        r = await playOnce([acct, age].filter(Boolean).join('; '));
-    }
-    if (r.status === 402) return empty();
-    const data = r.data && typeof r.data === 'object' ? r.data : null;
-    const playCookie = pickCookie(r.setCookie, 'eden_play_');
-    if (r.status !== 200 || !data || !data.url || !playCookie) return empty();
-    const cookie = [acct, age, playCookie.pair].filter(Boolean).join('; ');
+    // 握手 + 代理全由 youzidj-play Worker 做, 模块只给 videoId + 集页地址
+    const streamUrl = PLAY_WORKER + '/stream?video=' + encodeURIComponent(videoId) + '&ep=' + encodeURIComponent(epUrl);
     return jsonify({
-        urls: [fixUrl(data.url)],
-        headers: [{ 'User-Agent': UA, 'Referer': epUrl, 'Cookie': cookie }],
+        urls: [streamUrl],
+        headers: [{ 'User-Agent': UA, 'Referer': epUrl }],
     });
 }
 
