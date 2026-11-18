@@ -65,22 +65,28 @@ function asObj(data) {
 async function ensureToken() {
     if (_token) return _token;
     if (!_deviceId) _deviceId = randDevice();
-    const { data } = await $fetch.post(API_BASE + '/api/v1/auth/device', {
-        deviceId: 'h5:' + _deviceId,
-        channelCode: '',
-        attributionToken: '',
-    }, {
-        headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'User-Agent': UA,
-            'Referer': API_BASE + '/',
-            'Origin': API_BASE,
-        },
-    });
-    const d = asObj(data);
-    _token = t(d && d.token);
-    if (!_token) throw new Error('设备登录失败');
+    // body 用 JSON 字符串：XPTV 的 $fetch.post 不一定把对象 body 序列化为 JSON，
+    // 对象 body 在真机可能被当成 [object Object] 导致鉴权失败、整源空白。
+    // 鉴权失败不抛错：实测列表接口不带 token 也能回数据（2026-11-18），无 token 继续调接口。
+    try {
+        const { data } = await $fetch.post(API_BASE + '/api/v1/auth/device', JSON.stringify({
+            deviceId: 'h5:' + _deviceId,
+            channelCode: '',
+            attributionToken: '',
+        }), {
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'User-Agent': UA,
+                'Referer': API_BASE + '/',
+                'Origin': API_BASE,
+            },
+        });
+        const d = asObj(data);
+        _token = t(d && d.token);
+    } catch (e) {
+        _token = '';
+    }
     return _token;
 }
 
@@ -94,17 +100,17 @@ async function apiGet(path, query) {
         parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(v)));
     }
     if (parts.length) url += '?' + parts.join('&');
-    const { data } = await $fetch.get(url, {
-        headers: {
-            'Accept': 'application/json',
-            'User-Agent': UA,
-            'Referer': API_BASE + '/',
-            'Origin': API_BASE,
-            'Authorization': 'Bearer ' + _token,
-        },
-    });
+    // 只有拿到 token 时才带 Authorization：无 token 也能调列表/详情，401 时再重取 token 重试一次。
+    const headers = {
+        'Accept': 'application/json',
+        'User-Agent': UA,
+        'Referer': API_BASE + '/',
+        'Origin': API_BASE,
+    };
+    if (_token) headers['Authorization'] = 'Bearer ' + _token;
+    const { data } = await $fetch.get(url, { headers });
     const d = asObj(data);
-    if (d && d.status === 401) {
+    if (_token && d && d.status === 401) {
         _token = '';
         return apiGet(path, query);
     }

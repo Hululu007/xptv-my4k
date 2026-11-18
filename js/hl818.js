@@ -128,13 +128,9 @@ function buildGroups(vod) {
 }
 
 async function getConfig() {
-    const cfg = JSON.parse(JSON.stringify(appConfig));
-    try {
-        const html = await getText(HOST);
-        const tabs = parseCategories(html);
-        if (tabs.length) cfg.tabs = tabs;
-    } catch (e) {}
-    return jsonify(cfg);
+    // 静态 tabs：站方首页 VM 侧不可达（DNS 解析到 198.18.x.x 不可达地址，http/https 均 000），
+    // 现拉分类只会拖慢/拖垮入口；分类以文件内 2 个静态 tab 为准，站恢复后如需补分类再加。
+    return jsonify(appConfig);
 }
 
 async function getCards(ext) {

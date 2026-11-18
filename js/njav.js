@@ -798,7 +798,8 @@ async function getTracks(ext) {
     const tracks = [];
     let d = null;
     try { d = await detail({ body: { id } }); } catch (e) { d = null; }
-    const playUrl = __s(d && d.vod_play_url);
+    const vod0 = (d && Array.isArray(d.list) && d.list[0]) || null;
+    const playUrl = __s(vod0 && vod0.vod_play_url);
     if (playUrl) {
     const segs = playUrl.split('$$$');
     for (const seg of segs) {
@@ -808,7 +809,7 @@ async function getTracks(ext) {
             const nm = di > 0 ? ep.slice(0, di) : '正片';
             const pid = di >= 0 ? ep.slice(di + 1) : ep;
             if (!pid) continue;
-            tracks.push({ name: nm, pan: '', ext: { url: '', id: pid, name: nm } });
+            tracks.push({ name: nm, pan: '', ext: { url: pid, id: pid, name: nm } });
         }
     }
     }
@@ -817,7 +818,7 @@ async function getTracks(ext) {
 
 async function getPlayinfo(ext) {
     ext = argsify(ext);
-    const id = __s(ext.id || '');
+    const id = __s(ext.url || ext.id || '');
     const name = __s(ext.name || '');
     if (!id) return jsonify({ urls: [], headers: [] });
     let r = null;

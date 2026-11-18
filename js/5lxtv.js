@@ -6,12 +6,42 @@
 // 播放：详情页取 slug/t/n -> /api/play/<slug>?t=<t>&n=<n>&hls=1，回单档 VOD m3u8（AES-128，
 // 密钥走 /api/hlskey，分片为 .jpg 伪装的加密 TS）；实测单档 720p，站内无多档位，不编造；
 // play() 现取详情页拿新鲜 t/n；
-// 注意：猫源靠本地代理把分片改写为 .ts + video/mp2t 才能从头播/快进，XPTV 没有服务端，
-// 本文件只能给 /api/play 直链——猫源版用户已确认能快进，XPTV 直链的快进表现未经真机验证；
+// 分片是 .jpg 后缀 + image/jpeg，播放器直触建不起时间轴、播不了（VM 实测分片 200 但
+// Content-Type: image/jpeg），改走 Cloudflare Worker 5lxtv-hls（见
+// ~/workspace/xptv_batch/workers/5lxtv-hls.js）：代理 master 并把分片改写走 Worker 以
+// .ts 出（video/mp2t，支持 Range），KEY 走 Worker 原样透传；Worker 须用户部署后才可用，
+// 部署步骤见 Worker 文件头；部署前播放会失败，不要在未部署时重导测试；
 // 另：猫源 play() 里调的 playFinish() 在定版字幕芯里未定义，是坏调用，本文件不调，改用标准 subSearch；
 // 带字幕（有番号）。
 const HOST = 'https://5lxtv.com';
+const WORKER = 'https://5lxtv-hls.li768435813.workers.dev'; // 部署见 ~/workspace/xptv_batch/workers/5lxtv-hls.js（用户自己部署）
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+// 纯 JS base64url 编码（不用 Buffer，XPTV 沙箱未必有 Buffer）。
+function b64urlEncode(s) {
+    const bytes = [];
+    const str = String(s || '');
+    for (let i = 0; i < str.length; i++) {
+        const code = str.charCodeAt(i);
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+            const lo = str.charCodeAt(i + 1);
+            if (lo >= 0xdc00 && lo <= 0xdfff) {
+                const cp = 0x10000 + ((code - 0xd800) << 10) + (lo - 0xdc00);
+                bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+                i++;
+            } else bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        } else bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    }
+    const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+        out += abc[(n >> 18) & 63] + abc[(n >> 12) & 63] + (i + 1 < bytes.length ? abc[(n >> 6) & 63] : '') + (i + 2 < bytes.length ? abc[n & 63] : '');
+    }
+    return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
 
 function headers(referer) {
     return {
@@ -489,11 +519,13 @@ async function getPlayinfo(ext) {
     try {
         const html = await getHtml(durl);
         const p = extractPlayParams(html);
-        if (!p) return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        if (!p) return jsonify({ urls: [], headers: [] });
         const playUrl = HOST + '/api/play/' + encodeURIComponent(p.slug) + '?t=' + p.t + '&n=' + encodeURIComponent(p.n) + '&hls=1';
-        return withSubs(playUrl);
+        // 分片 .jpg 直出播不了，走 5lxtv-hls Worker 改写分片为 .ts（须先部署 Worker，见文件头）。
+        const workerUrl = WORKER + '/m3u8?u=' + b64urlEncode(playUrl) + '&r=' + b64urlEncode(durl);
+        return withSubs(workerUrl);
     } catch (e) {
-        return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        return jsonify({ urls: [], headers: [] });
     }
 }
 

@@ -1,8 +1,8 @@
 // 91成人短剧 - XPTV csp 格式（csp_91duanju）
-// 转换自 mira-cat nodejs/src/spider/video/91duanju.js（py_91duanju），站点 https://91crdj.com
-// 列表/详情/播放页 GET 直抓，播放页正则提取 m3u8 直出；提取不到时回播放页 URL 走嗅探兜底（同猫版 parse:1）。
+// 转换自 mira-cat nodejs/src/spider/video/91duanju.js（py_91duanju），站点 https://91crdj.com（301 到 https://91crdjai.com）
+// 播放主链：POST /api/videos/{id}/episodes/{n}/playback（无 body）→ data.streams.main 带签名的 m3u8 直出；
+// 集页 JSON 里 current.src 为空、只能调接口；接口 host 双试（集页 host → 另一域）；拿不到流返回空，绝不回页面地址。
 // 封面 bagua-img-proxy 前缀原样保留。
-// 嗅探型播放降级：回源页 URL，待真机验
 const HOST = 'https://91crdj.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const IMG_PROXY = 'https://bagua-img-proxy.li768435813.workers.dev';
@@ -12,6 +12,34 @@ const CATS = [
     ['manhua', '成人漫画'], ['xiaoshuo', '成人小说'], ['paihang', '热播榜'], ['biaoqian', '标签榜'],
     ['biaoqian/ntr', 'NTR'], ['biaoqian/fancha', '反差'], ['biaoqian/cabian', '擦边'],
 ];
+
+const API_HOSTS = ['https://91crdjai.com']; // 旧域 91crdj.com 的 POST 在部分出口直接挂起（无响应）、永不调它
+
+// 集页 URL /duanju/11281-anheijinyong1/1/ → {id:'11281', n:'1'}
+function parseEpRef(url) {
+    const m = String(url || '').match(/\/(\d+)-[^/]*\/(\d+)\/?(?:[?#]|$)/);
+    if (m) return { id: m[1], n: m[2] };
+    return null;
+}
+
+async function postPlayback(host, id, n, referer) {
+    const api = host + '/api/videos/' + id + '/episodes/' + n + '/playback';
+    try {
+        // 注意：body 必须不传——传空字符串会回 {"status":0,"msg":"播放参数无效"}；不传 body 才给流
+        const r = await $fetch.post(api, undefined, {
+            headers: { 'User-Agent': UA, 'Referer': referer, 'Accept': 'application/json' },
+        });
+        let data = r.data;
+        if (typeof data === 'string') {
+            try { data = JSON.parse(data); } catch (e) { return ''; }
+        }
+        const streams = data && data.data && data.data.streams;
+        const main = streams && (streams.main || streams.preview || '');
+        return typeof main === 'string' ? main : '';
+    } catch (e) {
+        return '';
+    }
+}
 
 const appConfig = {
     ver: 1,
@@ -191,35 +219,31 @@ async function getPlayinfo(ext) {
     if (isVideoFormat(raw)) {
         return jsonify({ urls: [raw], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
     }
-    const html = await fetchHtml(raw, HOST + '/');
-    if (!html) {
-        return jsonify({ urls: [raw], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
-    }
-    let m3u8Url = '';
-    let m = html.match(/"current"\s*:\s*\{[^{}]*"src"\s*:\s*"([^"]+)"/);
-    if (m) m3u8Url = m[1].replace(/\\\//g, '/').replace(/\\u0026/g, '&');
-    if (!m3u8Url) {
-        for (const v of ['player_aaaa', 'player_data']) {
-            const vm = html.match(new RegExp(v + '\\s*=\\s*(\\{[^;]*\\})'));
-            if (vm) {
-                try {
-                    const data = JSON.parse(vm[1]);
-                    m3u8Url = data.url || data.link || '';
-                    if (m3u8Url) break;
-                } catch (e) {}
-            }
+    const epUrl = raw.startsWith('http') ? raw : HOST + (raw.startsWith('/') ? raw : '/' + raw);
+    let ref = parseEpRef(epUrl);
+    if (!ref) {
+        // URL 里解析不出 id/集号时，从集页取 playback 接口模板 + 当前集号
+        const html = await fetchHtml(epUrl, HOST + '/');
+        if (html) {
+            const em = html.match(/\/api\/videos\/(\d+)\/episodes\/__EP__\/playback/);
+            const nm = html.match(/"current"\s*:\s*\{[^}]*"n"\s*:\s*(\d+)/);
+            if (em && nm) ref = { id: em[1], n: nm[1] };
         }
     }
-    if (!m3u8Url) {
-        const um = html.match(/(https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)[^\s"'<>\\]*)/);
-        if (um) m3u8Url = um[1];
+    if (!ref) return jsonify({ urls: [], headers: [] });
+    let host = '';
+    try { host = new URL(epUrl).origin; } catch (e) {}
+    // 新域优先；旧域 91crdj.com 的 POST 会挂起，跳过不试
+    const hosts = [];
+    for (const h of API_HOSTS) if (hosts.indexOf(h) < 0) hosts.push(h);
+    if (host && host !== 'https://91crdj.com' && hosts.indexOf(host) < 0) hosts.push(host);
+    for (const h of hosts) {
+        const main = await postPlayback(h, ref.id, ref.n, epUrl);
+        if (main) {
+            return jsonify({ urls: [main], headers: [{ 'User-Agent': UA, 'Referer': epUrl }] });
+        }
     }
-    if (m3u8Url) {
-        if (m3u8Url.startsWith('//')) m3u8Url = 'https:' + m3u8Url;
-        else if (m3u8Url.startsWith('/')) m3u8Url = HOST + m3u8Url;
-        return jsonify({ urls: [m3u8Url], headers: [{ 'User-Agent': UA, 'Referer': raw }] });
-    }
-    return jsonify({ urls: [raw], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
+    return jsonify({ urls: [], headers: [] });
 }
 
 async function search(ext) {

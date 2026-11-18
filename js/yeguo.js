@@ -73,7 +73,8 @@ function proxiedCover(url) {
     if (/^https?:\/\/pic\.jtzatly\.cn\//i.test(url)) {
         return IMG_WORKER + '/img?url=' + encodeURIComponent(url);
     }
-    if (/pic\.wlwvch\.cn|pic\.zdmhyg\.cn|pic\.wirqed\.cn|imgpublic\.ycomesc\.live/i.test(url)) {
+    // pic.nsxxlj.cn（2026-11-18 起的新图床）同为 AES 加密图，走 huangguo 代理出图（实测 200 image/png）。
+    if (/pic\.wlwvch\.cn|pic\.zdmhyg\.cn|pic\.wirqed\.cn|pic\.nsxxlj\.cn|imgpublic\.ycomesc\.live/i.test(url)) {
         return COVER_PROXY + '/?url=' + encodeURIComponent(url);
     }
     return url;

@@ -9,6 +9,8 @@
 // is_hot 决定 1080p 上限），再把每个变体 URL 改写成 /api/v1/videos/{id}/manifest/{变体}?access_token=<token>；
 // token 绑 IP——XPTV 在设备上取 token、设备上播放，同机同 IP 能过（Worker 中转才是死路，勿试）；
 // 1080p 只在 is_hot=true 时给，否则上限 720p，全被滤掉时补回最低档；master 取不到时给一条“自动”线；
+// 签名只在 getPlayinfo 播前现铸（新鲜 geo + 新鲜 token）：getTracks 只给未签名变体地址 + vid/raw，
+// 详情时铸好的 token 到用户点播时可能已过期/换 IP，点播时现取才有效；getTracks 全程 try/catch 绝不抛错；
 // 带字幕（仅片名含可抽番号时搜，播放地址域名会被误抽成 "AV01" 假番号，故只按片名查）。
 const HOST = 'https://www.av01.media';
 const API = 'https://www.av01.media/api/v1';
@@ -165,12 +167,14 @@ function jwtExp(token) {
     } catch (e) { return 0; }
 }
 
-async function getCdnToken(vid) {
+async function getCdnToken(vid, force) {
     const nowSec = Math.floor(Date.now() / 1000);
-    const cached = _cdnCache[vid];
-    if (cached && cached.expiresAt && nowSec < cached.expiresAt - 60) return cached;
+    if (!force) {
+        const cached = _cdnCache[vid];
+        if (cached && cached.expiresAt && nowSec < cached.expiresAt - 60) return cached;
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
-        const geo = await getGeo(attempt > 0);
+        const geo = await getGeo(force || attempt > 0);
         if (!geo) break;
         const q = 'token_v2=' + encodeURIComponent(String(geo.token_v2))
             + '&expires=' + encodeURIComponent(String(geo.expires))
@@ -667,35 +671,108 @@ async function getTracks(ext) {
     if (m) vid = m[1];
     vid = vid.replace(/[^0-9]/g, '');
     const tracks = [];
-    if (vid) {
-        await getGeo(false);
-        const v = await getJson(API + '/videos/' + vid);
-        const name = v ? t((v.title_translations && v.title_translations.cn) || v.title || v.dvd_id || vid) : vid;
-        const subTitle = (name + ' ' + (v && v.dvd_id ? String(v.dvd_id) : '')).trim();
-        const masterUrl = API + '/videos/' + vid + '/manifest/master.m3u8';
+    const masterUrl = vid ? API + '/videos/' + vid + '/manifest/master.m3u8' : '';
+    try {
+        if (vid) {
+            const v = await getJson(API + '/videos/' + vid);
+            const name = v ? t((v.title_translations && v.title_translations.cn) || v.title || v.dvd_id || vid) : vid;
+            const subTitle = (name + ' ' + (v && v.dvd_id ? String(v.dvd_id) : '')).trim();
+            const masterText = await getText(masterUrl);
+            const vars = parseMaster(masterText, masterUrl);
+            if (vars.length) {
+                // 只给未签名变体地址 + vid/raw：签名移到 getPlayinfo 播前现铸，
+                // 详情时铸好的 token 到点播时可能已过期/换 IP。
+                vars.sort(function (a, b) { return b.h - a.h; });
+                for (const x of vars) {
+                    tracks.push({ name: x.label, pan: '', ext: { url: x.url, vid: vid, raw: x.raw, name: subTitle } });
+                }
+            }
+            if (!tracks.length) {
+                tracks.push({ name: '自动', pan: '', ext: { url: masterUrl, vid: vid, raw: 'master.m3u8', name: subTitle } });
+            }
+        }
+    } catch (e) {
+        // 绝不抛错：下面补未签名 master 兜底
+    }
+    if (!tracks.length && vid) {
+        tracks.push({ name: '自动', pan: '', ext: { url: masterUrl, vid: vid, raw: 'master.m3u8', name: vid } });
+    }
+    return jsonify({ list: [{ title: '在线播放', tracks }] });
+}
+
+// 播前现铸：从 URL/ext 取 vid + 变体文件，用新鲜 geo + 新鲜 CDN token
+// 现签；master.m3u8 则先拉新鲜 master、按 is_hot 上限选档再签。
+// token 取不到时回落未签名地址（播单本身可取，分片可能 403），绝不抛错。
+async function freshAv01Url(url, vidIn, rawIn) {
+    let vid = vidIn || '';
+    let file = '';
+    let query = '';
+    const mm = url.match(/\/videos\/(\d+)\/manifest\/([^/?#]+)(\?[^#]*)?/);
+    if (mm) {
+        vid = vid || mm[1];
+        file = mm[2];
+        query = mm[3] || '';
+    }
+    if (!vid) return '';
+    // 去掉旧 access_token，保留 ro=0 这类原参数
+    let kept = '';
+    if (query) {
+        const parts = query.slice(1).split('&').filter(function (p) {
+            return p && p.indexOf('access_token=') !== 0;
+        });
+        if (parts.length) kept = '?' + parts.join('&');
+    }
+    const raw = rawIn || file || 'master.m3u8';
+    const isMaster = /master\.m3u8/i.test(file) || /master\.m3u8/i.test(raw);
+    const cdn = await getCdnToken(vid, true);
+    const masterUrl = API + '/videos/' + vid + '/manifest/master.m3u8';
+    const signFile = function (f) {
+        const ff = String(f || '').split('/').pop();
+        const sep = ff.indexOf('?') >= 0 ? '&' : '?';
+        return API + '/videos/' + vid + '/manifest/' + ff + sep + 'access_token=' + encodeURIComponent(cdn.token);
+    };
+    const bestAllowed = function (vars) {
+        const maxH = (cdn && cdn.isHot) ? 1080 : 720;
+        let kv = vars.filter(function (x) { return x.h <= maxH; });
+        if (!kv.length) {
+            const sorted = vars.slice().sort(function (a, b) { return a.h - b.h; });
+            kv = [sorted[0]];
+        }
+        kv.sort(function (a, b) { return b.h - a.h; });
+        return kv[0];
+    };
+    if (isMaster || !file) {
+        try {
+            const masterText = await getText(masterUrl);
+            const vars = parseMaster(masterText, masterUrl);
+            if (vars.length) {
+                const best = bestAllowed(vars);
+                if (cdn && cdn.token) return signVariantUrl(vid, best.raw, cdn.token);
+                return best.url;
+            }
+        } catch (e) {}
+        return masterUrl;
+    }
+    // 指定变体：按新鲜 master 里的真实高度校验 is_hot 上限，超限降档
+    try {
         const masterText = await getText(masterUrl);
         const vars = parseMaster(masterText, masterUrl);
         if (vars.length) {
-            const cdn = await getCdnToken(vid);
-            const maxH = (cdn && cdn.isHot) ? 1080 : 720;
-            let kept = [];
+            const baseFile = file.split('?')[0];
+            let hit = null;
             for (const x of vars) {
-                if (x.h <= maxH) kept.push(x);
+                if (String(x.raw || '').split('/').pop().split('?')[0] === baseFile) { hit = x; break; }
             }
-            if (!kept.length) {
-                const sorted = vars.slice().sort(function (a, b) { return a.h - b.h; });
-                kept = [sorted[0]];
+            const maxH = (cdn && cdn.isHot) ? 1080 : 720;
+            if (hit && hit.h > maxH) {
+                const best = bestAllowed(vars);
+                if (cdn && cdn.token) return signVariantUrl(vid, best.raw, cdn.token);
+                return best.url;
             }
-            kept.sort(function (a, b) { return b.h - a.h; });
-            for (const x of kept) {
-                const u = (cdn && cdn.token) ? signVariantUrl(vid, x.raw, cdn.token) : x.url;
-                tracks.push({ name: x.label, pan: '', ext: { url: u, name: subTitle } });
-            }
-        } else {
-            tracks.push({ name: '自动', pan: '', ext: { url: masterUrl, name: subTitle } });
         }
-    }
-    return jsonify({ list: [{ title: '在线播放', tracks }] });
+    } catch (e) {}
+    if (cdn && cdn.token) return signFile(file + kept);
+    return API + '/videos/' + vid + '/manifest/' + file + kept;
 }
 
 async function getPlayinfo(ext) {
@@ -707,6 +784,10 @@ async function getPlayinfo(ext) {
         urls: [url],
         headers: [{ 'User-Agent': UA, 'Referer': HOST + '/cn' }],
     };
+    try {
+        const fresh = await freshAv01Url(url, String(ext.vid || ''), String(ext.raw || ''));
+        if (fresh) result.urls = [fresh];
+    } catch (e) {}
     if (name) {
         try {
             const subs = await subSearch(name);

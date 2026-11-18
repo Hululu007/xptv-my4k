@@ -1,7 +1,8 @@
 // 4KPorno - XPTV csp 格式
 // 转换自 mira-cat nodejs/src/spider/video/py_4kporno.js
 // 站点 https://www.4kporno.xxx（KVS 站）；详情页 <source> 直给三档 mp4（2160p/720p/480p，H.264）；
-// get_file 地址稳定、无需 cookie，播放时由播放器跟随 302 到 fpvcdn 签名地址；
+// get_file 地址 302 到 fpvcdn 签名地址，签名绑请求方 IP；点播时重拉详情页现取新鲜 <source>
+// 地址 + 详情页会话 cookie（PHPSESSID 等）交给播放器，不用详情时 mint 的老 token；
 // 顶级分类 4 个（最新/最热/评分最高/全部类别），361 个真实分类在 XPTV 里只用 tabs、默认取首项；
 // 字幕不接（欧美站无番号）。
 const HOST = 'https://www.4kporno.xxx';
@@ -71,6 +72,65 @@ async function getHtml(url, referer) {
     } catch (e) {
         return '';
     }
+}
+
+// 取页 + set-cookie（详情页会话：PHPSESSID 等；播放地址须带同会话 cookie，
+// 否则站方可能 410/403）。$fetch 回的 headers 可能是数组、getSetCookie 函数
+// 或逗号合并串，三种都兼容；解析失败时 cookie 留空、不阻塞播放。
+async function getPage(url, referer) {
+    try {
+        const r = await $fetch.get(url, { headers: headers(referer) });
+        const data = r && r.data;
+        const html = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
+        let cookies = [];
+        if (r && r.headers) {
+            const sc = r.headers['set-cookie'] || r.headers['Set-Cookie'];
+            if (Array.isArray(sc)) cookies = sc;
+            else if (typeof sc === 'string' && sc) cookies = [sc];
+            else if (typeof r.headers.getSetCookie === 'function') {
+                try { cookies = r.headers.getSetCookie(); } catch (e) {}
+            }
+        }
+        return { html, cookies };
+    } catch (e) {
+        return { html: '', cookies: [] };
+    }
+}
+
+function cookieHeader(cookies) {
+    const parts = [];
+    for (const c of (cookies || [])) {
+        // 合并串按逗号切（Expires 里的逗号切出的段无 '=' 会被滤掉），
+        // 每段只取第一个 ';' 之前的名值对。
+        for (const seg of String(c).split(',')) {
+            const nv = seg.split(';')[0].trim();
+            if (nv && nv.indexOf('=') > 0) parts.push(nv);
+        }
+    }
+    const seen = new Set();
+    return parts.filter((p) => {
+        const k = p.split('=')[0];
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+    }).join('; ');
+}
+
+// 详情页 <source> 三档：有几档出几档，绝不硬编
+function parseSources(html) {
+    const quals = [];
+    const seen = new Set();
+    if (!html) return quals;
+    const re = /<source[^>]+src='([^']+\.mp4[^']*)'[^>]*label="([^"]+)"[^>]*>/gi;
+    let m;
+    while ((m = re.exec(html))) {
+        const label = t(m[2]);
+        if (!label || seen.has(label)) continue;
+        seen.add(label);
+        quals.push({ label, url: m[1].replace(/&amp;/g, '&') });
+    }
+    quals.sort((a, b) => parseInt(b.label, 10) - parseInt(a.label, 10));
+    return quals;
 }
 
 function pagecountFromHtml(html, page, list, pageSize) {
@@ -149,20 +209,8 @@ async function getTracks(ext) {
         let url = t(raw);
         if (!/^https?:\/\//i.test(url)) url = absUrl(url);
         const html = await getHtml(url);
-        if (html) {
-            const quals = [];
-            const seen = new Set();
-            const re = /<source[^>]+src='([^']+\.mp4[^']*)'[^>]*label="([^"]+)"[^>]*>/gi;
-            let m;
-            while ((m = re.exec(html))) {
-                const label = t(m[2]);
-                if (!label || seen.has(label)) continue;
-                seen.add(label);
-                quals.push({ label, url: m[1].replace(/&amp;/g, '&') });
-            }
-            quals.sort((a, b) => parseInt(b.label, 10) - parseInt(a.label, 10));
-            for (const q of quals) tracks.push({ name: q.label, pan: '', ext: { url: q.url } });
-        }
+        const quals = parseSources(html);
+        for (const q of quals) tracks.push({ name: q.label, pan: '', ext: { url: q.url, durl: url, label: q.label } });
     }
     return jsonify({ list: [{ title: '在线播放', tracks }] });
 }
@@ -171,6 +219,29 @@ async function getPlayinfo(ext) {
     ext = argsify(ext);
     const url = String(ext.url || '');
     if (!url) return jsonify({ urls: [], headers: [] });
+    const durl = String(ext.durl || '');
+    const label = String(ext.label || '');
+    // 点播时重拉详情页现取新鲜 <source> 地址 + 当次会话 cookie：<source> 里
+    // 的 token 只在当次详情会话有效，详情时的老 token 到点播时可能已失效，
+    // 播放器拿老地址请求 get_file 会 403 Wrong IP。
+    if (durl) {
+        try {
+            const pg = await getPage(durl, durl);
+            if (pg.html) {
+                const quals = parseSources(pg.html);
+                let pick = null;
+                if (label) pick = quals.find((q) => q.label === label) || null;
+                if (!pick && quals.length) pick = quals[0];
+                if (pick) {
+                    const hdrs = { 'User-Agent': UA, 'Referer': durl };
+                    const ck = cookieHeader(pg.cookies);
+                    if (ck) hdrs.Cookie = ck;
+                    return jsonify({ urls: [pick.url], headers: [hdrs] });
+                }
+            }
+        } catch (e) {}
+    }
+    // 重取失败：回落详情时的老地址（仍是真流地址，不是页面）
     return jsonify({ urls: [url], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
 }
 

@@ -347,14 +347,14 @@ async function detail(reqIn) {
     }
     quals.sort((a, b) => b.h - a.h);
     for (const q of quals) {
-      const proxy = proxyUrl(reqIn, '/proxy/m3u8', q.url, durl);
-      lines.push({ name: q.h + 'p', url: proxy || q.url });
+      // XPTV 无本地蜘蛛服务：js2p:// 代理地址在 XPTV 里是死链，直接给变体直链
+      // （分片为 .jpeg，与 Ero/HornyJav 同类，播放器能否建时间轴以真机为准）
+      lines.push({ name: q.h + 'p', url: q.url });
     }
   }
   if (!lines.length) {
-    // 主清单取不到时退回自适应线（仍走代理，主清单 variant 行由代理改写）
-    const proxy = proxyUrl(reqIn, '/proxy/m3u8', masterUrl, durl);
-    lines.push({ name: '自适应', url: proxy || masterUrl });
+    // 主清单取不到时退回自适应线（直出主清单，XPTV 无本地代理）
+    lines.push({ name: '自适应', url: masterUrl });
   }
   // 字幕预热：按每条线路登记片名；后台逐条串行找字幕（不 await，
   // 不一拥而上——并行预热曾挤挂 SubtitleCat）
@@ -775,7 +775,8 @@ async function getTracks(ext) {
     const tracks = [];
     let d = null;
     try { d = await detail({ body: { id } }); } catch (e) { d = null; }
-    const playUrl = __s(d && d.vod_play_url);
+    const vod0 = (d && Array.isArray(d.list) && d.list[0]) || null;
+    const playUrl = __s(vod0 && vod0.vod_play_url);
     if (playUrl) {
     const segs = playUrl.split('$$$');
     for (const seg of segs) {
@@ -783,7 +784,7 @@ async function getTracks(ext) {
         for (const ep of eps) {
             const di = ep.indexOf('$');
             const nm = di > 0 ? ep.slice(0, di) : '正片';
-            tracks.push({ name: nm, pan: '', ext: { url: '', id: ep, name: nm } });
+            tracks.push({ name: nm, pan: '', ext: { url: ep, id: ep, name: nm } });
         }
     }
     }
@@ -792,7 +793,7 @@ async function getTracks(ext) {
 
 async function getPlayinfo(ext) {
     ext = argsify(ext);
-    const id = __s(ext.id || '');
+    const id = __s(ext.url || ext.id || '');
     const name = __s(ext.name || '');
     if (!id) return jsonify({ urls: [], headers: [] });
     let r = null;

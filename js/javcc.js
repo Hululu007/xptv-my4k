@@ -388,7 +388,7 @@ function decryptVideplayDp(pox, dp) {
 
 async function resolveLines(embedUrl, durl) {
     const embedHtml = await getText(embedUrl, durl);
-    if (!embedHtml) return [{ name: '正片', url: embedUrl }];
+    if (!embedHtml) return [];
     const unpacked = unpackDeanEdwards(embedHtml);
     const hay = unpacked || embedHtml;
     let master = '';
@@ -401,7 +401,7 @@ async function resolveLines(embedUrl, durl) {
         const dp = embedHtml.match(/let\s+dp\s*=\s*'([^']+)'/);
         if (px && dp) master = decryptVideplayDp(px[1], dp[1]);
     }
-    if (!master) return [{ name: '正片', url: embedUrl }];
+    if (!master) return [];
     const masterText = await getText(master, embedUrl);
     const variants = masterText ? parseMasterVariants(masterText) : [];
     if (variants.length) {
@@ -489,7 +489,6 @@ async function getTracks(ext) {
     let lines = [];
     if (embedUrl) {
         try { lines = await resolveLines(embedUrl, durl); } catch (e) { lines = []; }
-        if (!lines.length) lines = [{ name: '正片', url: embedUrl }];
     }
     if (!lines.length) return jsonify({ list: [] });
     const tracks = lines.map(function (l) {
@@ -502,7 +501,8 @@ async function getPlayinfo(ext) {
     ext = argsify(ext);
     const url = String(ext.url || '');
     if (!url) return jsonify({ urls: [], headers: [] });
-    // 嵌页地址本身无法直播，交给播放器自行解析（猫源 play 的 parse:1 同款）
+    // 只接受 Worker 地址或直链：嵌页地址不是可播流，交给播放器只会转圈
+    if (url.indexOf(WORKER) !== 0 && !/\.m3u8(\?|$)/i.test(url) && !/\.mp4(\?|$)/i.test(url)) return jsonify({ urls: [], headers: [] });
     const result = {
         urls: [url],
         headers: [{ 'User-Agent': UA, 'Referer': String(ext.embed || HOST + '/') }],

@@ -1,9 +1,12 @@
 // SexTB - XPTV csp 格式（csp_sextb）
-// 转换自 mira-cat nodejs/src/spider/video/sextb.js（py_sextb，881 行逐段核查）。站点 https://sextb.cc（备用 https://sextb.net）。
-// 依赖 Worker：sextb-hls（https://sextb-hls.li768435813.workers.dev）—— F4 走 /f4、SW/StreamHG 走 /v 全链代理，
-// getPlayinfo 返回 Worker 产出的 URL 原样直出。
+// 转换自 mira-cat nodejs/src/spider/video/sextb.js（py_sextb）。站点 https://sextb.cc（备用 https://sextb.net）。
+// 依赖 Worker：sextb-hls v4（https://sextb-hls.li768435813.workers.dev）——
+// 播放主链：Worker /resolve?u=<详情页>&ep=<线路>（默认 F4，可换 SW），Worker 在服务端取详情页 + 调 /ajax/player，
+// 回 {"ok":true,"url":"<Worker /f4 或 /v 代理地址>","line":"F4"/"SW"}；蜘蛛侧探活（确是 #EXTM3U 才收），F4 不通换 SW。
+// DD/FL/ST 等线 /resolve 只回嵌页地址（sniff:true），XPTV 无嗅探位，不收。
+// 蜘蛛侧旧解析（ajax/player 借线 + 各宿主直解）保留作兜底：VM 侧 sextb 直连被 CF 拦、走不通，设备侧可能通。
+// 拿不到可播流返回空，绝不回页面/嵌页地址。
 // $fetch.post 待真机验（本地 harness 已实测请求真能通）：/ajax/player 为表单 POST、playmate/vidara 为 JSON POST，逐字保持猫侧线格式。
-// 嗅探型播放降级：回源页 URL，待真机验 —— 猫版最后兜底 parse:1 嗅探 embed 在 XPTV 无嗅探位，降级为 urls:[embed URL]。
 // 猫版 setTimeout/AbortController 探活与 fetch 双通道改 $fetch 单通道串行（探活以 $fetch.get 状态+文本判定，替代二进制字节探活）；
 // 跨调用状态无（猫版原本即无全局缓存）。
 const HOSTS = ['https://sextb.cc', 'https://sextb.net'];
@@ -403,6 +406,19 @@ async function getTracks(ext) {
     return jsonify({ list: [{ title: 'SexTB', tracks: [{ name: '正片', pan: '', ext: { id: durl, flag: 'SexTB' } }] }] });
 }
 
+// Worker /resolve：在服务端取详情页 + 调 /ajax/player，返回可播地址。
+// line 为空 = 默认线（F4）；返回 {ok, url, host, line, sniff?}，sniff 型为嵌页地址、不可直接播。
+async function resolveViaWorker(durl, line) {
+    try {
+        const u = SEXTB_WORKER + '/resolve?u=' + encodeURIComponent(durl) + (line ? '&ep=' + encodeURIComponent(line) : '');
+        const { data, status } = await $fetch.get(u, { headers: { 'User-Agent': UA } });
+        if (status !== undefined && status !== 200) return null;
+        const j = typeof data === 'string' ? JSON.parse(data) : data;
+        if (!j || !j.ok || !j.url || !/^https?:\/\//.test(j.url)) return null;
+        return j;
+    } catch (e) { return null; }
+}
+
 async function getPlayinfo(ext) {
     ext = argsify(ext);
     let id = t(ext.id);
@@ -411,6 +427,15 @@ async function getPlayinfo(ext) {
     if (id.includes('$')) id = id.split('$').pop().trim();
     if (/\.m3u8(\?|$)/i.test(id)) return jsonify({ urls: [id], headers: uaHead });
     const durl = /^https?:\/\//.test(id) ? id : fixUrl(id);
+    // 1) Worker /resolve：默认线 → SW，探活确是 #EXTM3U 才收；sniff 型嵌页地址不收
+    for (const line of ['', 'SW']) {
+        const r = await resolveViaWorker(durl, line);
+        if (!r || r.sniff) continue;
+        if (await probePlaylist(r.url, { 'User-Agent': UA })) {
+            return jsonify({ urls: [r.url], headers: uaHead });
+        }
+    }
+    // 2) 蜘蛛侧旧解析兜底（设备侧可能通；VM 侧 sextb 直连被 CF 拦、走不通）
     let html = await getHtml(durl);
     const hasPlayer = (h) => !!h && (h.includes('sextb-player') || h.includes('btn-player'));
     if (html && !hasPlayer(html)) {
@@ -487,10 +512,6 @@ async function getPlayinfo(ext) {
         if (links.hls3) swLastResort = links.hls3;
     }
     if (swLastResort) return jsonify({ urls: [swLastResort], headers: uaHead });
-    const sniff = defEmbed || firstEmbed;
-    if (sniff && /^https?:\/\//.test(sniff)) {
-        return jsonify({ urls: [sniff], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
-    }
     return jsonify({ urls: [], headers: [] });
 }
 

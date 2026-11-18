@@ -59,6 +59,38 @@ function hiResCover(url) {
 function parseList(html) {
     const items = [];
     const seen = {};
+    // 按 <div class="card" 分块：每块内 card__poster 的 data-preview 即真实封面
+    // （2026-11-18 实测：card__img 的 src 为空，真实封面在 data-preview，preview.png 直出 200）。
+    const blocks = String(html || '').split(/<div class="card"(?=[\s>])/);
+    for (let i = 1; i < blocks.length; i++) {
+        const b = blocks[i];
+        const lm = b.match(/class="card__link"[^>]*href="(\/(?:cn|en)\/v\/[^"]+)"/)
+            || b.match(/class="card__cover"[^>]*href="(\/(?:cn|en)\/v\/[^"]+)"/);
+        if (!lm) continue;
+        const link = lm[1];
+        if (seen[link]) continue;
+        seen[link] = 1;
+        const tm = b.match(/class="card__title"[^>]*>[\s\S]{0,300}?<a[^>]*>([\s\S]*?)<\/a>/);
+        const title = tm ? t(tm[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')) : link.split('/').pop();
+        let pic = '';
+        const pv = b.match(/data-preview="(https?:\/\/[^"]+)"/i);
+        if (pv) pic = pv[1];
+        if (!pic) {
+            const im = b.match(/class="card__img"[^>]+src="(https?:\/\/[^"]+)"/i)
+                || b.match(/src="(https?:\/\/[^"]+)"[^>]+class="card__img"/i);
+            if (im) pic = im[1];
+        }
+        const dm = b.match(/class="card__dur"[^>]*>([^<]+)</);
+        items.push({
+            vod_id: 'javxx:' + link,
+            vod_name: title,
+            vod_pic: hiResCover(pic),
+            vod_remarks: dm ? t(dm[1]) : '',
+            ext: { id: 'javxx:' + link },
+        });
+    }
+    if (items.length) return items;
+    // 兜底：旧版式（card__link 直取，封面空）
     const re = /<a class="card__link" href="(\/(?:cn|en)\/v\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     let m;
     while ((m = re.exec(html))) {
@@ -67,53 +99,13 @@ function parseList(html) {
         seen[link] = 1;
         let title = t(m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' '));
         if (!title) title = link.split('/').pop();
-        let pic = '';
-        let dur = '';
-        const windowStart = Math.max(0, m.index - 1200);
-        const chunk = html.slice(windowStart, m.index + 20);
-        const im = chunk.match(/class="card__img"[^>]+src="([^"]+)"|src="([^"]+)"[^>]+class="card__img"/);
-        if (im) pic = im[1] || im[2] || '';
-        if (!pic) {
-            const im2 = chunk.match(/(?:src|data-src)="(https?:\/\/[^"]+\/(?:s360|s500|s1080)\/[^"]+)"/i);
-            if (im2) pic = im2[1];
-        }
-        const dm = chunk.match(/class="card__dur"[^>]*>([^<]+)</);
-        if (dm) dur = t(dm[1]);
         items.push({
             vod_id: 'javxx:' + link,
             vod_name: title,
-            vod_pic: hiResCover(pic),
-            vod_remarks: dur,
+            vod_pic: '',
+            vod_remarks: '',
             ext: { id: 'javxx:' + link },
         });
-    }
-    if (!items.length) {
-        const re2 = /href="(\/(?:cn|en)\/v\/[^"]+)"[\s\S]{0,400}?class="card__img"[^>]+src="([^"]+)"/gi;
-        while ((m = re2.exec(html))) {
-            if (seen[m[1]]) continue;
-            seen[m[1]] = 1;
-            items.push({
-                vod_id: 'javxx:' + m[1],
-                vod_name: m[1].split('/').pop(),
-                vod_pic: hiResCover(m[2]),
-                vod_remarks: '',
-                ext: { id: 'javxx:' + m[1] },
-            });
-        }
-    }
-    if (!items.length) {
-        const re3 = /class="card__cover"[^>]*href="(\/(?:cn|en)\/v\/[^"]+)"[\s\S]{0,500}?class="card__img"[^>]+src="([^"]+)"/gi;
-        while ((m = re3.exec(html))) {
-            if (seen[m[1]]) continue;
-            seen[m[1]] = 1;
-            items.push({
-                vod_id: 'javxx:' + m[1],
-                vod_name: m[1].split('/').pop(),
-                vod_pic: hiResCover(m[2]),
-                vod_remarks: '',
-                ext: { id: 'javxx:' + m[1] },
-            });
-        }
     }
     return items;
 }

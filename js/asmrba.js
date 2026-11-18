@@ -70,17 +70,8 @@ async function pagePosts(page, extra) {
 }
 
 async function getConfig() {
-    try {
-        const cats = await categories();
-        if (cats.length) {
-            return jsonify({
-                ver: 1,
-                title: 'ASMR吧',
-                site: HOST,
-                tabs: [{ name: '最新更新', ext: { id: 'latest' } }].concat(cats),
-            });
-        }
-    } catch (e) {}
+    // 静态 tabs：站方 WP API VM 侧不可达（DNS 解析到 198.18.x.x 不可达地址，http/https 均 000），
+    // 现拉分类只会拖慢入口；分类以 1 个静态 tab 为准，站恢复后如需补分类再加。
     return jsonify(appConfig);
 }
 

@@ -3,7 +3,6 @@
 // 播放：主链为播放页 SSR 内嵌 player_aaaa 的 url 直出 m3u8（parse:0 等价）；解析失败时猫版落 parse:1 嗅探播放页，
 // XPTV 无嗅探位，降级为回播放页 URL —— 嗅探型播放降级：回源页 URL，待真机验 XPTV 是否嗅探非媒体 URL。
 // encrypt=2 的 Base64 解码由 Node Buffer 改为 CryptoJS.enc.Base64 对应件。
-const CryptoJS = createCryptoJS();
 
 const SITE = 'https://17rip.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
@@ -143,8 +142,9 @@ function parseSearchCards(html) {
 }
 
 function catUrl(tid, page) {
-    page = Math.max(1, page || 1);
-    return page > 1 ? `${SITE}/vodshow/${tid}--------${page}---.html` : `${SITE}/vodshow/${tid}-----------.html`;
+    // 2026-11-18 实测：/vodshow/{tid}-----------.html 只回 26KB AJAX 壳（标题 AV0、无列表），
+    // /vodtype/{tid}.html 才是服务端渲染的列表（281 条）；站内 vodtype 页无翻页标记，单页即全量
+    return `${SITE}/vodtype/${tid}.html`;
 }
 
 // 猫版 detail 的 vod_play_from/vod_play_url → 分组 tracks（$$$ 分组、# 分集、首个 $ 拆名与 playId）
@@ -213,25 +213,80 @@ async function getTracks(ext) {
     return jsonify({ list: buildGroups(fromArr.join('$$$'), urlArr.join('$$$')) });
 }
 
+// ---------- 纯 JS base64 / UTF-8（不依赖 Buffer / atob / CryptoJS；XPTV 内可用） ----------
+const _B64T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function _b64ToBytes(b64) {
+  const s = String(b64 == null ? '' : b64).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = [];
+  for (let i = 0; i < s.length; i += 4) {
+    const c0 = _B64T.indexOf(s[i]);
+    const c1 = _B64T.indexOf(s[i + 1] || 'A');
+    const c2 = _B64T.indexOf(s[i + 2] || 'A');
+    const c3 = _B64T.indexOf(s[i + 3] || 'A');
+    const n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+    out.push((n >> 16) & 0xff);
+    if (s[i + 2] !== undefined) out.push((n >> 8) & 0xff);
+    if (s[i + 3] !== undefined) out.push(n & 0xff);
+  }
+  return out;
+}
+function _bytesToB64(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i], b1 = i + 1 < bytes.length ? bytes[i + 1] : 0, b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += _B64T[b0 >> 2] + _B64T[((b0 & 3) << 4) | (b1 >> 4)] + (i + 1 < bytes.length ? _B64T[((b1 & 15) << 2) | (b2 >> 6)] : '=') + (i + 2 < bytes.length ? _B64T[b2 & 63] : '=');
+  }
+  return out;
+}
+function _utf8Bytes(s) {
+  const str = String(s == null ? '' : s);
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let cp = str.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return out;
+}
+function _utf8Decode(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length;) {
+    const b = bytes[i++];
+    if (b < 0x80) s += String.fromCharCode(b);
+    else if ((b & 0xe0) === 0xc0) { const b2 = bytes[i++] || 0; s += String.fromCharCode(((b & 0x1f) << 6) | (b2 & 0x3f)); }
+    else if ((b & 0xf0) === 0xe0) { const b2 = bytes[i++] || 0, b3 = bytes[i++] || 0; s += String.fromCharCode(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f)); }
+    else if ((b & 0xf8) === 0xf0) { const b2 = bytes[i++] || 0, b3 = bytes[i++] || 0, b4 = bytes[i++] || 0; s += String.fromCodePoint((((b & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f))); }
+    else s += '\ufffd';
+  }
+  return s;
+}
+function _b64EncodeUtf8(s) { return _bytesToB64(_utf8Bytes(s)); }
+function _b64DecodeUtf8(b64) { try { return _utf8Decode(_b64ToBytes(b64)); } catch (e) { return ''; } }
+function _b64urlEncodeUtf8(s) { return _b64EncodeUtf8(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function _b64urlDecodeUtf8(s) { let b = String(s == null ? '' : s).replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '='; return _b64DecodeUtf8(b); }
+
 async function getPlayinfo(ext) {
     ext = argsify(ext);
     let id = t(ext.id);
     if (!id) return jsonify({ urls: [], headers: [] });
     if (id.includes('$')) id = id.split('$').pop().trim();
     const purl = fixUrl(id);
-    const sniff = () => jsonify({ urls: [purl], headers: [{ 'User-Agent': UA, 'Referer': REFERER }] });
+    const empty = () => jsonify({ urls: [], headers: [] });
     const html = await getHtml(purl);
-    if (!html) return sniff();
+    if (!html) return empty();
     const dm = html.match(/var\s+player_aaaa\s*=\s*(\{[\s\S]*?\})\s*<\/script>/) || html.match(/var\s+player_aaaa\s*=\s*(\{[^{}]*\})/);
-    if (!dm) return sniff();
+    if (!dm) return empty();
     let pd = null;
     try { pd = JSON.parse(dm[1]); } catch (e) {}
-    if (!pd || !pd.url) return sniff();
+    if (!pd || !pd.url) return empty();
     let raw = String(pd.url);
     const enc = parseInt(pd.encrypt, 10) || 0;
     try {
         if (enc === 1) raw = unescape(raw);
-        else if (enc === 2) raw = unescape(CryptoJS.enc.Base64.parse(raw).toString(CryptoJS.enc.Utf8));
+        else if (enc === 2) raw = unescape(_b64DecodeUtf8(raw));
     } catch (e) {}
     return jsonify({ urls: [fixUrl(raw)], headers: [{ 'User-Agent': UA, 'Referer': purl }] });
 }

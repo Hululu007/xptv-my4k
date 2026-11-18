@@ -274,10 +274,6 @@ async function getTracks(ext) {
             ext: { url: 'javct:' + fsrc + '|' + episode + '|' + pt + '|' + pk, name: title, durl: durl },
         });
     }
-    if (!tracks.length) {
-        // 无服务器线时回落详情页（播放器自行解析，同 sextb XPTV 的降级做法）
-        tracks.push({ name: '网页播放', pan: '', ext: { url: durl, name: title, durl: durl } });
-    }
     return jsonify({ list: [{ title: '在线播放', tracks: tracks }] });
 }
 
@@ -297,9 +293,6 @@ async function getPlayinfo(ext) {
             } catch (e) {}
         }
         return jsonify(result);
-    }
-    if (/^https?:\/\//i.test(id)) {
-        return jsonify({ urls: [id], headers: [{ 'User-Agent': UA, 'Referer': durl || HOST + '/' }] });
     }
     // 服务器线：javct:filmId|episode|pt|pk → POST /ajax/player
     const parts = id.replace(/^javct:/, '').split('|');

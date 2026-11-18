@@ -1428,10 +1428,23 @@ async function sha256hex(str) {
   return [h0, h1, h2, h3, h4, h5, h6, h7].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
+function _utf8Bytes(s) {
+  const str = String(s == null ? '' : s);
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let cp = str.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return out;
+}
+// MD5（RFC 1321）：原实现第 3 轮移位/消息序号、第 4 轮消息序号抄错，哈希全错；按标准重写
 function md5hex(input) {
-  // RSA Data Security MD5 (compact public-domain style implementation)
   function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
-  function add(x, y) { const l = (x & 0xffff) + (y & 0xffff); const m = (x >> 16) + (y >> 16) + (l >> 16); return (m << 16) | (l & 0xffff); }
+  function add(x, y) { const l = (x & 0xffff) + (y & 0xffff); const m = (x >>> 16) + (y >>> 16) + (l >> 16); return (m << 16) | (l & 0xffff); }
   function F(x, y, z) { return (x & y) | (~x & z); }
   function G(x, y, z) { return (x & z) | (y & ~z); }
   function H(x, y, z) { return x ^ y ^ z; }
@@ -1440,7 +1453,9 @@ function md5hex(input) {
   function gg(a, b, c, d, x, s, ac) { a = add(a, add(add(G(b, c, d), x), ac)); return add(rl(a, s), b); }
   function hh(a, b, c, d, x, s, ac) { a = add(a, add(add(H(b, c, d), x), ac)); return add(rl(a, s), b); }
   function ii(a, b, c, d, x, s, ac) { a = add(a, add(add(I(b, c, d), x), ac)); return add(rl(a, s), b); }
-  const str = unescape(encodeURIComponent(String(input)));
+  const _u8 = _utf8Bytes(String(input));
+  let str = '';
+  for (let i = 0; i < _u8.length; i++) str += String.fromCharCode(_u8[i]);
   const nblk = ((str.length + 8) >> 6) + 1;
   const blks = new Array(nblk * 16).fill(0);
   for (let i = 0; i < str.length; i++) blks[i >> 2] |= str.charCodeAt(i) << ((i % 4) * 8);
@@ -1465,22 +1480,22 @@ function md5hex(input) {
     c = gg(c, d, a, b, blks[i + 3], 14, 0xf4d50d87); b = gg(b, c, d, a, blks[i + 8], 20, 0x455a14ed);
     a = gg(a, b, c, d, blks[i + 13], 5, 0xa9e3e905); d = gg(d, a, b, c, blks[i + 2], 9, 0xfcefa3f8);
     c = gg(c, d, a, b, blks[i + 7], 14, 0x676f02d9); b = gg(b, c, d, a, blks[i + 12], 20, 0x8d2a4c8a);
-    a = hh(a, b, c, d, blks[i + 5], 5, 0xfffa3942); d = hh(d, a, b, c, blks[i + 8], 11, 0x8771f681);
+    a = hh(a, b, c, d, blks[i + 5], 4, 0xfffa3942); d = hh(d, a, b, c, blks[i + 8], 11, 0x8771f681);
     c = hh(c, d, a, b, blks[i + 11], 16, 0x6d9d6122); b = hh(b, c, d, a, blks[i + 14], 23, 0xfde5380c);
-    a = hh(a, b, c, d, blks[i + 1], 5, 0xa4beea44); d = hh(d, a, b, c, blks[i + 4], 11, 0x4bdecfa9);
+    a = hh(a, b, c, d, blks[i + 1], 4, 0xa4beea44); d = hh(d, a, b, c, blks[i + 4], 11, 0x4bdecfa9);
     c = hh(c, d, a, b, blks[i + 7], 16, 0xf6bb4b60); b = hh(b, c, d, a, blks[i + 10], 23, 0xbebfbc70);
-    a = hh(a, b, c, d, blks[i + 13], 5, 0x289b7ec6); d = hh(d, a, b, c, blks[i + 2], 11, 0xeaa127fa);
-    c = hh(c, d, a, b, blks[i + 5], 16, 0xd4ef3085); b = hh(b, c, d, a, blks[i + 8], 23, 0x04881d05);
-    a = hh(a, b, c, d, blks[i + 11], 5, 0xd9d4d039); d = hh(d, a, b, c, blks[i + 14], 11, 0xe6db99e5);
-    c = hh(c, d, a, b, blks[i + 3], 16, 0x1fa27cf8); b = hh(b, c, d, a, blks[i + 6], 23, 0xc4ac5665);
+    a = hh(a, b, c, d, blks[i + 13], 4, 0x289b7ec6); d = hh(d, a, b, c, blks[i + 0], 11, 0xeaa127fa);
+    c = hh(c, d, a, b, blks[i + 3], 16, 0xd4ef3085); b = hh(b, c, d, a, blks[i + 6], 23, 0x04881d05);
+    a = hh(a, b, c, d, blks[i + 9], 4, 0xd9d4d039); d = hh(d, a, b, c, blks[i + 12], 11, 0xe6db99e5);
+    c = hh(c, d, a, b, blks[i + 15], 16, 0x1fa27cf8); b = hh(b, c, d, a, blks[i + 2], 23, 0xc4ac5665);
     a = ii(a, b, c, d, blks[i + 0], 6, 0xf4292244); d = ii(d, a, b, c, blks[i + 7], 10, 0x432aff97);
-    c = ii(c, d, a, b, blks[i + 10], 15, 0xab9423a7); b = ii(b, c, d, a, blks[i + 5], 21, 0xfc93a039);
+    c = ii(c, d, a, b, blks[i + 14], 15, 0xab9423a7); b = ii(b, c, d, a, blks[i + 5], 21, 0xfc93a039);
     a = ii(a, b, c, d, blks[i + 12], 6, 0x655b59c3); d = ii(d, a, b, c, blks[i + 3], 10, 0x8f0ccc92);
-    c = ii(c, d, a, b, blks[i + 6], 15, 0xffeff47d); b = ii(b, c, d, a, blks[i + 1], 21, 0x85845dd1);
+    c = ii(c, d, a, b, blks[i + 10], 15, 0xffeff47d); b = ii(b, c, d, a, blks[i + 1], 21, 0x85845dd1);
     a = ii(a, b, c, d, blks[i + 8], 6, 0x6fa87e4f); d = ii(d, a, b, c, blks[i + 15], 10, 0xfe2ce6e0);
-    c = ii(c, d, a, b, blks[i + 14], 15, 0xa3014314); b = ii(b, c, d, a, blks[i + 11], 21, 0x4e0811a1);
-    a = ii(a, b, c, d, blks[i + 9], 6, 0xf7537e82); d = ii(d, a, b, c, blks[i + 4], 10, 0xbd3af235);
-    c = ii(c, d, a, b, blks[i + 2], 15, 0x2ad7d2bb); b = ii(b, c, d, a, blks[i + 13], 21, 0xeb86d391);
+    c = ii(c, d, a, b, blks[i + 6], 15, 0xa3014314); b = ii(b, c, d, a, blks[i + 13], 21, 0x4e0811a1);
+    a = ii(a, b, c, d, blks[i + 4], 6, 0xf7537e82); d = ii(d, a, b, c, blks[i + 11], 10, 0xbd3af235);
+    c = ii(c, d, a, b, blks[i + 2], 15, 0x2ad7d2bb); b = ii(b, c, d, a, blks[i + 9], 21, 0xeb86d391);
     a = add(a, oa); b = add(b, ob); c = add(c, oc); d = add(d, od);
   }
   const hex = (n) => {
@@ -1677,9 +1692,7 @@ async function getTracks(ext) {
   const durl = t(ext.id || ext.url);
   if (!durl) return jsonify({ list: [] });
   const html = await getText(durl, { Referer: REFERER }, 5000);
-  if (!html) {
-    return jsonify({ list: [{ title: '备用', tracks: [{ name: '正片', pan: '', ext: { id: 'x:' + durl, flag: '备用' } }] }] });
-  }
+  if (!html) return jsonify({ list: [] });
   const emb = extractEmbeds(html);
 
   // 逐条验 vidhide embed: 已删的直接跳过 (最多验 3 条防拖慢; 串行)
@@ -1697,16 +1710,7 @@ async function getTracks(ext) {
   if (emb.streamcash.length) cands.push({ score: 80, name: '直连', entry: 's:' + emb.streamcash[0] });
   if (vid) cands.push({ score: vidScore, name: '高清', entry: 'w:' + vid });
   if (emb.byse.length) cands.push({ score: 60, name: '高清B', entry: 'b:' + emb.byse[0] });
-  // 备用嗅探: 优先未分类宿主; Byse 帖不再重复嗅探同一 SPA
-  // (b: 失败时自身就会回退嗅探该页)
-  if (emb.sniff.length) cands.push({ score: 20, name: '备用', entry: 'x:' + emb.sniff[0] });
-  else if (vid && vidState === 'weak') {
-    // 弱 vidhide (只有 hls2/hls3) 经 Worker 必 502 (分片对机房出口 403);
-    // 备用改嗅探 embed 页本身: 设备 WebView 里的原播放器从设备出口
-    // 取 hls2/hls3, 与机房出口不同命, 这是猫源独有的活路
-    cands.push({ score: 30, name: '备用', entry: 'x:' + vid });
-  }
-  else cands.push({ score: 10, name: '备用', entry: 'x:' + durl });
+  // XPTV 无嗅探位：x: 候选（嵌页/详情页地址）交给播放器只会转圈，不再出线
   cands.sort((a, b) => b.score - a.score);
 
   const list = cands.map(c => ({
@@ -1737,7 +1741,7 @@ async function getPlayinfo(ext) {
     if (direct) {
       return jsonify({ urls: [direct], headers: [{ 'User-Agent': UA, 'Referer': 'https://streamcash.to/' }] });
     }
-    return jsonify({ urls: [target], headers: [headers] });
+    return jsonify({ urls: [], headers: [] });
   }
   // Byse 线: 设备侧现场铸造 API 直链; 失败按猫版 parse:1 降级回其 SPA 页 (嗅探兜底, 待真机验)
   if (kind === 'b:' && /^https?:\/\//.test(target)) {
@@ -1745,10 +1749,10 @@ async function getPlayinfo(ext) {
     if (direct) {
       return jsonify({ urls: [direct], headers: [{ 'User-Agent': UA, 'Referer': target }] });
     }
-    return jsonify({ urls: [target], headers: [headers] });
+    return jsonify({ urls: [], headers: [] });
   }
-  // 默认: 猫版 parse:1 嗅探 (x: 目标恒为完整 URL: embed 或详情页), XPTV 降级回源页 URL
-  return jsonify({ urls: [target || body], headers: [headers] });
+  // 默认: x: 嗅探目标是页面地址，不是可播流，返回空
+  return jsonify({ urls: [], headers: [] });
 }
 
 async function search(ext) {

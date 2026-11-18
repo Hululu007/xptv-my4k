@@ -5,7 +5,6 @@
 // 未证实/降级项：无嗅探降级，播放为 Worker 产出 URL 直出（playForm=worker）；
 //   decodeEv 的 Node Buffer base64 已改 CryptoJS.enc.Base64 对应件（本地 harness 已验）。
 const cheerio = createCheerio();
-const CryptoJS = createCryptoJS();
 
 const HOST = 'https://rou.video';
 const API_MIRROR_HOST = 'https://rouvb1.xyz';
@@ -80,12 +79,66 @@ function parseCards(html) {
 }
 
 // 猫版 Buffer.from(ev.d,'base64').toString('binary') 的 CryptoJS 等价：逐字节取 WordArray
+// ---------- 纯 JS base64 / UTF-8（不依赖 Buffer / atob / CryptoJS；XPTV 内可用） ----------
+const _B64T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function _b64ToBytes(b64) {
+  const s = String(b64 == null ? '' : b64).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = [];
+  for (let i = 0; i < s.length; i += 4) {
+    const c0 = _B64T.indexOf(s[i]);
+    const c1 = _B64T.indexOf(s[i + 1] || 'A');
+    const c2 = _B64T.indexOf(s[i + 2] || 'A');
+    const c3 = _B64T.indexOf(s[i + 3] || 'A');
+    const n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+    out.push((n >> 16) & 0xff);
+    if (s[i + 2] !== undefined) out.push((n >> 8) & 0xff);
+    if (s[i + 3] !== undefined) out.push(n & 0xff);
+  }
+  return out;
+}
+function _bytesToB64(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i], b1 = i + 1 < bytes.length ? bytes[i + 1] : 0, b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += _B64T[b0 >> 2] + _B64T[((b0 & 3) << 4) | (b1 >> 4)] + (i + 1 < bytes.length ? _B64T[((b1 & 15) << 2) | (b2 >> 6)] : '=') + (i + 2 < bytes.length ? _B64T[b2 & 63] : '=');
+  }
+  return out;
+}
+function _utf8Bytes(s) {
+  const str = String(s == null ? '' : s);
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let cp = str.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return out;
+}
+function _utf8Decode(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length;) {
+    const b = bytes[i++];
+    if (b < 0x80) s += String.fromCharCode(b);
+    else if ((b & 0xe0) === 0xc0) { const b2 = bytes[i++] || 0; s += String.fromCharCode(((b & 0x1f) << 6) | (b2 & 0x3f)); }
+    else if ((b & 0xf0) === 0xe0) { const b2 = bytes[i++] || 0, b3 = bytes[i++] || 0; s += String.fromCharCode(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f)); }
+    else if ((b & 0xf8) === 0xf0) { const b2 = bytes[i++] || 0, b3 = bytes[i++] || 0, b4 = bytes[i++] || 0; s += String.fromCodePoint((((b & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f))); }
+    else s += '\ufffd';
+  }
+  return s;
+}
+function _b64EncodeUtf8(s) { return _bytesToB64(_utf8Bytes(s)); }
+function _b64DecodeUtf8(b64) { try { return _utf8Decode(_b64ToBytes(b64)); } catch (e) { return ''; } }
+function _b64urlEncodeUtf8(s) { return _b64EncodeUtf8(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function _b64urlDecodeUtf8(s) { let b = String(s == null ? '' : s).replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '='; return _b64DecodeUtf8(b); }
+
 function decodeEv(ev) {
-    const wa = CryptoJS.enc.Base64.parse(ev.d);
+    const bytes = _b64ToBytes(ev.d);
     let decoded = '';
-    for (let i = 0; i < wa.sigBytes; i++) {
-        const byte = (wa.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-        decoded += String.fromCharCode(byte - ev.k);
+    for (let i = 0; i < bytes.length; i++) {
+        decoded += String.fromCharCode(bytes[i] - ev.k);
     }
     return JSON.parse(decoded);
 }
@@ -190,8 +243,12 @@ async function getPlayinfo(ext) {
     let finalUrl;
     if (url.startsWith(HLS_WORKER)) {
         finalUrl = url;
-    } else {
+    } else if (/\.m3u8(\?|$)/i.test(url) || /\.mp4(\?|$)/i.test(url)) {
+        finalUrl = toWorkerUrl(absUrl(url));
+    } else if (/\.jpg(\?|$)/i.test(url)) {
         finalUrl = toWorkerUrl(absUrl(url.replace('.jpg', '.m3u8')));
+    } else {
+        return jsonify({ urls: [], headers: [] });
     }
     return jsonify({ urls: [finalUrl], headers: [headers()] });
 }

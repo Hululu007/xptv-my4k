@@ -1,8 +1,8 @@
 // 51吃瓜 - XPTV csp 格式
 // 转换自 mira-cat nodejs/src/spider/video/chigua51.js（py_51chigua，现行猫版为准）
-// 站点 https://bus.qkvsednb.cc；封面走 51chigua Worker 只做封面解密（调用原样保留）；
+// 站点 https://bus.kxwsgaiwj.cc（2026-11-18 实测：旧域 bus.qkvsednb.cc 301 到本站）；封面走 51chigua Worker 只做封面解密（调用原样保留）；
 // 播放为详情页内 m3u8/mp4 直链直出。
-const HOST = 'https://bus.qkvsednb.cc';
+const HOST = 'https://bus.kxwsgaiwj.cc';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const IMG_PROXY = 'https://51chigua.li768435813.workers.dev/img?url=';
 
@@ -122,7 +122,7 @@ function buildGroups(playFrom, playUrl) {
     return groups;
 }
 
-/** 解析文章列表：post-card 结构，封面在 loadBannerDirect('URL',...)（同猫版） */
+/** 解析文章列表：post-card 结构，封面在 blog-background 的 z-bg-loader-url（2026-11-18 实测 25 卡 23 张有） */
 function parseList(html) {
     const out = [];
     const seen = new Set();
@@ -130,8 +130,11 @@ function parseList(html) {
     const blocks = html.split('<div class="post-card"');
     for (let i = 1; i < blocks.length; i++) {
         const b = blocks[i];
+        // vid 优先取卡片自身的 post-card-<id>：块内第一个 /archives/ 链接常是跟在卡片后的
+        // 广告位链接，取它会张冠李戴——旧代码因此把首卡 vid 取成广告帖 151553，详情 504 导致无集数。
+        const pm2 = b.match(/id="post-card-(\d+)"/);
         const am = b.match(/\/archives\/(\d+)\//);
-        let vid = am ? am[1] : '';
+        let vid = pm2 ? pm2[1] : (am ? am[1] : '');
         if (!vid || seen.has(vid)) continue;
 
         let title = '';
@@ -141,8 +144,12 @@ function parseList(html) {
         seen.add(vid);
 
         let pic = '';
-        const pm = b.match(/loadBannerDirect\('([^']+)'/);
-        if (pm) pic = pm[1];
+        const zm = b.match(/z-bg-loader-url="([^"]+)"/) || b.match(/x-bg-loader-url="([^"]+)"/);
+        if (zm) pic = zm[1];
+        if (!pic) {
+            const pm = b.match(/loadBannerDirect\('([^']+)'/);
+            if (pm) pic = pm[1];
+        }
         if (!pic) {
             const im = b.match(/<img[^>]+src="([^"]+)"/);
             if (im) pic = absUrl(im[1]);

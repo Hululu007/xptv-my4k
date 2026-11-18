@@ -46,9 +46,26 @@ function b64encode(str) {
 }
 
 // ---------- HTTP（只走框架 req） ----------
+// 单请求超时 (有 setTimeout 的运行时才生效; 无则原样等待, 不报错)。
+// 站方 POST (/api/v1/player 等) 在 VM 侧会无限挂起, 超时即按失败处理。
+const REQ_TIMEOUT_MS = 15000;
+function withTimeout(promise, ms) {
+  if (typeof setTimeout !== 'function') return promise;
+  let timer = null;
+  const timeoutP = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ __timeout: true }), ms);
+    if (timer && typeof timer.unref === 'function') { try { timer.unref(); } catch (e) {} }
+  });
+  return Promise.race([promise, timeoutP]).then((r) => {
+    if (timer) { try { clearTimeout(timer); } catch (e) {} }
+    return r;
+  });
+}
+
 async function reqGet(url, headers, timeoutMs) {
   try {
-    const r = await $fetch.get(url, { headers: headers || {}, timeout: timeoutMs || 15000, responseType: 'text', transformResponse: [(d) => d] });
+    const r = await withTimeout($fetch.get(url, { headers: headers || {}, timeout: timeoutMs || 15000, responseType: 'text', transformResponse: [(d) => d] }), REQ_TIMEOUT_MS);
+    if (!r || r.__timeout) return { status: 0, body: '' };
     const text = typeof r.data === 'string' ? r.data : (r.data === null || r.data === undefined ? '' : JSON.stringify(r.data));
     const ok = r.status >= 200 && r.status < 300;
     return { status: r.status || 0, body: ok ? text : '' };
@@ -59,7 +76,8 @@ async function reqGet(url, headers, timeoutMs) {
 async function reqPostForm(url, data, headers) {
   const body = Object.keys(data).map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(data[k])).join('&');
   try {
-    const r = await $fetch.post(url, body, { headers: Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, headers || {}), timeout: 15000 });
+    const r = await withTimeout($fetch.post(url, body, { headers: Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, headers || {}), timeout: 15000 }), REQ_TIMEOUT_MS);
+    if (!r || r.__timeout) return { status: 0, json: null, text: '' };
     if (typeof r.data === 'string') {
       try { return { status: r.status || 0, json: JSON.parse(r.data), text: r.data }; }
       catch (e) { return { status: r.status || 0, json: null, text: r.data }; }
@@ -718,9 +736,10 @@ async function subSearch(title) {
 // ---------------- XPTV 适配层 ----------------
 // 猫源 home/category/detail/play/search 原样保留；以下 5 个 XPTV 入口做薄适配。
 async function getConfig() {
-    const h = await home();
-    const tabs = (h && Array.isArray(h.class) ? h.class : []).map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
-    return jsonify({ ver: 1, title: 'ToJav', site: 'https://tojav.net', tabs: tabs.length ? tabs : [{ name: '全部', ext: { id: '' } }] });
+    // 静态 tabs, 不联网 (CATS 即分类表; 旧版调 home() 先拉一页列表,
+    // 站方慢 (单页可达 9s) 且一挂就拖死 getConfig)。
+    const tabs = CATS.map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
+    return jsonify({ ver: 1, title: 'ToJav', site: 'https://tojav.net', tabs });
 }
 
 async function getCards(ext) {
@@ -765,7 +784,15 @@ async function getPlayinfo(ext) {
     const url = String(ext.url || '');
     if (!url) return jsonify({ urls: [], headers: [] });
     const r = await play({ body: { id: url } });
-    const result = { urls: [r.url || url], headers: [r.header || {}] };
+    // 只接受真媒体地址; 令牌本身 (tojav:film:ep)、嵌套页 (parse:1 嗅探
+    // 地址, 如 /embed/ 或 /e/ 形) 一律不回 (页面地址绝不当播放地址)。
+    // 无真地址时直接回空, 不再跑字幕搜索。
+    const media = String((r && r.url) || '');
+    if (!media || !/^https?:\/\//.test(media) || /^tojav:/.test(media) ||
+        /\/embed\//.test(media) || /\/e\/[A-Za-z0-9_-]+\/?$/.test(media)) {
+        return jsonify({ urls: [], headers: [] });
+    }
+    const result = { urls: [media], headers: [r.header || {}] };
     const name = String(ext.name || '');
     if (name) {
         try { const subs = await subSearch(name); if (subs && subs.length) result.subs = subs; } catch (e) {}

@@ -371,7 +371,8 @@ async function getPlayinfo(ext) {
                 const j = JSON.parse(m[1]);
                 const srcs = (j && j.epPlaySrcs) || {};
                 // 猫版取 srcs[ep]（playId 为 $$$ 分隔时 ep 带前导 $，一并兼容原集号键）或 videoSrc
-                url = srcs[ep] || (ep && ep.charAt(0) === '$' ? srcs[ep.slice(1)] : '') || (j && j.videoSrc) || '';
+                // 2026-11-18 补：站方现也用 previewSrc / videoSrcHevc（VM 实测四字段均空，见汇报）
+                url = srcs[ep] || (ep && ep.charAt(0) === '$' ? srcs[ep.slice(1)] : '') || (j && j.videoSrc) || (j && j.previewSrc) || (j && j.videoSrcHevc) || '';
             } catch (e) {}
         }
         if (url) {

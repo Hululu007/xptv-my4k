@@ -176,13 +176,68 @@ async function postForm(url, fields, headers, timeoutMs) {
 
 // theme.script.min.js 的 xorDecrypt 原样移植（Buffer 版；App 内无 atob/TextDecoder）：
  // player_enc 是 base64，解出字节后逐字节 XOR key（__pk，循环），再按 UTF-8 还原。
+// ---------- 纯 JS base64 / UTF-8（不依赖 Buffer / atob / CryptoJS；XPTV 内可用） ----------
+const _B64T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function _b64ToBytes(b64) {
+  const s = String(b64 == null ? '' : b64).replace(/[^A-Za-z0-9+/]/g, '');
+  const out = [];
+  for (let i = 0; i < s.length; i += 4) {
+    const c0 = _B64T.indexOf(s[i]);
+    const c1 = _B64T.indexOf(s[i + 1] || 'A');
+    const c2 = _B64T.indexOf(s[i + 2] || 'A');
+    const c3 = _B64T.indexOf(s[i + 3] || 'A');
+    const n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+    out.push((n >> 16) & 0xff);
+    if (s[i + 2] !== undefined) out.push((n >> 8) & 0xff);
+    if (s[i + 3] !== undefined) out.push(n & 0xff);
+  }
+  return out;
+}
+function _bytesToB64(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i], b1 = i + 1 < bytes.length ? bytes[i + 1] : 0, b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += _B64T[b0 >> 2] + _B64T[((b0 & 3) << 4) | (b1 >> 4)] + (i + 1 < bytes.length ? _B64T[((b1 & 15) << 2) | (b2 >> 6)] : '=') + (i + 2 < bytes.length ? _B64T[b2 & 63] : '=');
+  }
+  return out;
+}
+function _utf8Bytes(s) {
+  const str = String(s == null ? '' : s);
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let cp = str.codePointAt(i);
+    if (cp > 0xffff) i++;
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return out;
+}
+function _utf8Decode(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length;) {
+    const b = bytes[i++];
+    if (b < 0x80) s += String.fromCharCode(b);
+    else if ((b & 0xe0) === 0xc0) { const b2 = bytes[i++] || 0; s += String.fromCharCode(((b & 0x1f) << 6) | (b2 & 0x3f)); }
+    else if ((b & 0xf0) === 0xe0) { const b2 = bytes[i++] || 0, b3 = bytes[i++] || 0; s += String.fromCharCode(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f)); }
+    else if ((b & 0xf8) === 0xf0) { const b2 = bytes[i++] || 0, b3 = bytes[i++] || 0, b4 = bytes[i++] || 0; s += String.fromCodePoint((((b & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f))); }
+    else s += '\ufffd';
+  }
+  return s;
+}
+function _b64EncodeUtf8(s) { return _bytesToB64(_utf8Bytes(s)); }
+function _b64DecodeUtf8(b64) { try { return _utf8Decode(_b64ToBytes(b64)); } catch (e) { return ''; } }
+function _b64urlEncodeUtf8(s) { return _b64EncodeUtf8(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function _b64urlDecodeUtf8(s) { let b = String(s == null ? '' : s).replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '='; return _b64DecodeUtf8(b); }
+
 function xorDecrypt(enc, key) {
   if (!enc || !key) return '';
   try {
-    const buf = Buffer.from(String(enc), 'base64');
-    const out = Buffer.alloc(buf.length);
-    for (let i = 0; i < buf.length; i++) out[i] = buf[i] ^ key.charCodeAt(i % key.length);
-    return out.toString('utf8');
+    const buf = _b64ToBytes(String(enc));
+    const out = [];
+    for (let i = 0; i < buf.length; i++) out.push(buf[i] ^ key.charCodeAt(i % key.length));
+    return _utf8Decode(out);
   } catch (e) {
     return '';
   }
@@ -862,7 +917,8 @@ async function getPlayinfo(ext) {
     const url = String(ext.url || '');
     if (!url) return jsonify({ urls: [], headers: [] });
     const r = await play({ body: { id: url } });
-    const result = { urls: [r.url || url], headers: [r.header || {}] };
+    if (!r.url) return jsonify({ urls: [], headers: [] });
+    const result = { urls: [r.url], headers: [r.header || {}] };
     const name = String(ext.name || '');
     if (name) {
         try { const subs = await subSearch(name); if (subs && subs.length) result.subs = subs; } catch (e) {}

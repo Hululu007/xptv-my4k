@@ -51,6 +51,28 @@ const STATIC_CATS = [
 ];
 const SORT_FILTER = [{ key: 'sort', name: '排序', value: [{ n: '最热', v: 'hot' }, { n: '最新', v: 'latest' }] }];
 
+// 静态 tabs（2026-11-18 实测 /categories + /topics 快照）：4 核心 + 8 线路 + 5 专题 = 17。
+// getConfig 不再拉 /categories+/topics+/home 三接口，入口零网络；线路/专题有变时再同步快照。
+const STATIC_TABS = [
+  { type_id: 'rank', type_name: '🔥 热门榜' },
+  { type_id: 'new', type_name: '🆕 最新上线' },
+  { type_id: 'all', type_name: '📺 全部短剧' },
+  { type_id: 'wish', type_name: '✨ 魔改愿望榜' },
+  { type_id: 'line|4b0f7137-1c41-4915-a342-e697f3800270', type_name: '精选推荐' },
+  { type_id: 'line|10000000-0000-4000-8000-0000000000b3', type_name: '最新上线' },
+  { type_id: 'line|10000000-0000-4000-8000-0000000000c0', type_name: '热播短剧' },
+  { type_id: 'line|10000000-0000-4000-8000-000000000002', type_name: '七猫原创' },
+  { type_id: 'line|10000000-0000-4000-8000-000000000003', type_name: 'AI 漫剧' },
+  { type_id: 'line|10000000-0000-4000-8000-0000000000b1', type_name: '魔改短剧' },
+  { type_id: 'line|10000000-0000-4000-8000-0000000000b2', type_name: 'AI 换脸' },
+  { type_id: 'line|10000000-0000-4000-8000-0000000000b4', type_name: '影视综艺' },
+  { type_id: 'topic|10000000-0000-4000-8000-000000000040', type_name: '精品高分AI短剧专辑' },
+  { type_id: 'topic|10000000-0000-4000-8000-000000000042', type_name: '家庭伦理AI短剧专辑' },
+  { type_id: 'topic|10000000-0000-4000-8000-000000000043', type_name: '仙侠奇幻AI短剧专辑' },
+  { type_id: 'topic|10000000-0000-4000-8000-000000000041', type_name: '游戏动漫短剧专辑' },
+  { type_id: 'topic|71662153-9cc1-4f17-ba28-dfa571979d4d', type_name: '天菜男同AI短剧专题' },
+];
+
 function hdr() {
   return {
     'User-Agent': UA,
@@ -108,10 +130,14 @@ function decodePic(u) {
 function vod(j) {
   if (!j) return null;
   const n = parseInt(j.episodeCount || 0, 10) || 0;
+  // 封面走 7mao-fetch Worker /f/：7cat-pic.bedfpk.cn 在用户网络侧被拦（与 7cat-media 同 CDN），
+  // 直出封面用户看不到；经 Worker 代取后可显示。Worker 白名单须加 7cat-pic.bedfpk.cn 并重部署后生效。
+  let pic = decodePic(j.coverUrl || '');
+  if (/^https?:\/\/7cat-pic\.bedfpk\.cn\//i.test(pic)) pic = viaWorker(pic);
   return {
     vod_id: j.dramaId || j.id || '',
     vod_name: j.title || '',
-    vod_pic: decodePic(j.coverUrl || ''),
+    vod_pic: pic,
     vod_remarks: n > 0 ? ('共' + n + '集') : '',
     type_name: (Array.isArray(j.tags) && j.tags.length) ? j.tags.join(' · ') : '短剧',
   };
@@ -312,9 +338,8 @@ const subResultCache = new Map();
 // ---------------- XPTV 适配层 ----------------
 // 猫源 home/category/detail/play/search 原样保留；以下 5 个 XPTV 入口做薄适配。
 async function getConfig() {
-    const h = await home();
-    const tabs = (h && Array.isArray(h.class) ? h.class : []).map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
-    return jsonify({ ver: 1, title: '七猫短剧', site: 'https://7maoduanju.com', tabs: tabs.length ? tabs : [{ name: '全部', ext: { id: '' } }] });
+    const tabs = STATIC_TABS.map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
+    return jsonify({ ver: 1, title: '七猫短剧', site: 'https://7maoduanju.com', tabs });
 }
 
 async function getCards(ext) {

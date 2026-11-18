@@ -5,11 +5,40 @@
 // 播放链 (照猫版 2026-10-22 现行版): 查库命中用库内 paths 走 embed 解密直出; 未命中回退
 //       模块内现铸 (POST /api/play/, data-ver 切盐分支), POST 经 Worker /post 为主、
 //       $fetch.post 直连为辅 —— $fetch.post 待真机验 (本地 harness 已验线格式可通)。
-//       现铸也失败时降级回 watch 页 URL (XPTV 无嗅探位, 待真机验 XPTV 是否嗅探非媒体 URL)。
+//       现铸也失败时 getPlayinfo 返回空 (2026-11-18 起不再回 watch 页 URL,
+//       页面地址绝不当播放地址)。
 // 猫版的多通道竞速与延时重试一律改串行; 诊断卡/诊断集名丢弃; 猫版清晰度分组呈现
 //       (1080p/720p/480p 分组 + 组内降序) 映射为 getTracks 的线路组 (每档一个 group)。
 // resolveLines 结果带进程内备忘 (仅提速, 取不到备忘时完整重铸, 不依赖跨调用状态)。
 
+// URL 全局缺失时的最小兜底: 部分 JS 沙箱 (如裸 vm 上下文) 不提供 URL,
+// 本文件多处用 new URL 取 hostname/pathname/search, 无 URL 时那些分支会静默失效。
+// 真实运行时已有 URL 时此段不生效。仅支持 http(s) URL, pathname/search 可改写,
+// toString() 按当前各段重建。
+if (typeof URL === 'undefined') {
+    var URL = function (u, base) {
+        let s = String(u || '');
+        if (base && !/^[a-z][a-z0-9+.-]*:/i.test(s)) {
+            const b = String(base);
+            if (s.slice(0, 2) === '//') { s = 'https:' + s; }
+            else if (s.charAt(0) === '/') { const m0 = b.match(/^(https?:\/\/[^\/]+)/i); s = (m0 ? m0[1] : '') + s; }
+            else { s = b.replace(/[^\/]*$/, '') + s; }
+        }
+        if (s.slice(0, 2) === '//') s = 'https:' + s;
+        const m = s.match(/^(https?:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/i);
+        if (!m) throw new Error('Invalid URL');
+        this.protocol = (m[1] || 'https:').toLowerCase();
+        this.hostname = (m[2] || '').toLowerCase();
+        this.port = m[3] || '';
+        this.pathname = m[4] || '/';
+        this.search = m[5] || '';
+        this.hash = m[6] || '';
+        this.host = this.hostname + (this.port ? ':' + this.port : '');
+        this.origin = this.protocol + '//' + this.host;
+        this.href = s;
+        this.toString = function () { return this.protocol + '//' + this.host + this.pathname + this.search + this.hash; };
+    };
+}
 const HOST = 'https://www.javhdporn.net';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const REFERER = HOST + '/';
@@ -54,9 +83,26 @@ function clean(s) {
 }
 
 // ---------------- $fetch 薄封装 (data 对象/字符串两兼容) ----------------
+// 单请求超时 (有 setTimeout 的运行时才生效; 无则原样等待, 不报错)。
+// 挂起的通道 (直连 POST 等) 会拖死整条链, 超时即按通道失败处理。
+const REQ_TIMEOUT_MS = 10000;
+function withTimeout(promise, ms) {
+  if (typeof setTimeout !== 'function') return promise;
+  let timer = null;
+  const timeoutP = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ __timeout: true }), ms);
+    if (timer && typeof timer.unref === 'function') { try { timer.unref(); } catch (e) {} }
+  });
+  return Promise.race([promise, timeoutP]).then((r) => {
+    if (timer) { try { clearTimeout(timer); } catch (e) {} }
+    return r;
+  });
+}
+
 async function sfGet(url, headers) {
   try {
-    const r = await $fetch.get(url, { headers: headers || {} });
+    const r = await withTimeout($fetch.get(url, { headers: headers || {} }), REQ_TIMEOUT_MS);
+    if (!r || r.__timeout) return { status: 0, data: '' };
     return { status: (r && typeof r.status === 'number') ? r.status : 200, data: r ? r.data : '' };
   } catch (e) {
     return { status: 0, data: '' };
@@ -65,7 +111,8 @@ async function sfGet(url, headers) {
 
 async function sfPost(url, bodyStr, headers) {
   try {
-    const r = await $fetch.post(url, bodyStr, { headers: headers || {} });
+    const r = await withTimeout($fetch.post(url, bodyStr, { headers: headers || {} }), REQ_TIMEOUT_MS);
+    if (!r || r.__timeout) return { status: 0, data: '' };
     return { status: (r && typeof r.status === 'number') ? r.status : 200, data: r ? r.data : '' };
   } catch (e) {
     return { status: 0, data: '' };
@@ -397,9 +444,10 @@ function tokenSalts(ver) {
 function dexResp(seed, data) { return dexSalt(SALT_MAIN, seed, data); }
 function dexRespUtf8(seed, data) { return dexSaltUtf8(SALT_MAIN, seed, data); }
 
-// embed 页 data-config 解密: key = reverse( b64( b64(pathname+search).substr(4,20) + '_0x59a0e4' ) )
+// embed 页 data-config 解密: key = reverse( b64( b64(pathname+search).substring(6,22) + '_0x59a0e4' ) )
+// 2026-11-18 实测修正: 站方 main.js 现用 (6,22), 旧 (4,20) 解出乱码 (两站实测坐实)。
 function decryptConfig(cfgB64, pathname, search) {
-  const arg = strToB64(String(pathname) + String(search)).substring(4, 20);
+  const arg = strToB64(String(pathname) + String(search)).substring(6, 22);
   const key = strToB64(arg + '_0x59a0e4').split('').reverse().join('');
   const pt = bytesToLatin1(rc4(key, b64ToBytes(cfgB64)));
   const json = JSON.parse(bytesToUtf8(b64ToBytes(pt)));
@@ -739,12 +787,8 @@ async function getTracks(ext) {
   const lines = rl.lines || [];
   const groups = [];
   if (!lines.length) {
-    // 全链失败: 降级一条 watch 页 URL (XPTV 无嗅探位, 待真机验)
-    groups.push({
-      title: '网页嗅探·兜底',
-      tracks: [{ name: '播放', pan: '', ext: { id: durl + '@@sniff', flag: '网页嗅探·兜底' } }],
-    });
-    return jsonify({ list: groups });
+    // 全链失败: 返回空 (绝不回 watch 页 URL 当播放地址)。
+    return jsonify({ list: [] });
   }
   // 清晰度分组 (照猫版呈现): 每档一个 group (title=档位, 降序),
   // 组内沿用全局序 (出口组 -> 清晰度 -> 宿主优劣 -> 原序);
@@ -769,11 +813,6 @@ async function getTracks(ext) {
     });
     groups.push({ title: gname, tracks });
   }
-  // 直链之外的最后兜底: watch 页 (嗅探降级)
-  groups.push({
-    title: '网页嗅探·兜底',
-    tracks: [{ name: '播放', pan: '', ext: { id: durl + '@@sniff', flag: '网页嗅探·兜底' } }],
-  });
   return jsonify({ list: groups });
 }
 
@@ -782,8 +821,6 @@ async function getPlayinfo(ext) {
   let id = t(ext.id);
   if (!id) return jsonify({ urls: [], headers: [] });
   if (id.includes('$')) id = id.split('$').pop().trim();
-  const sniffOnly = id.endsWith('@@sniff');
-  if (sniffOnly) id = id.slice(0, -'@@sniff'.length);
   const mm = id.match(/^(https?:\/\/\S+?)@@(\d+)(?:\.(\d+))?$/);
   const durl = mm ? mm[1] : absUrl(id);
   const wantIdx = mm ? parseInt(mm[2], 10) : -1;
@@ -794,8 +831,8 @@ async function getPlayinfo(ext) {
   let lines = [];
   try { ({ lines } = await resolveLines(durl)); } catch (e) { lines = []; }
   if (!lines.length) {
-    // 降级: 回 watch 页 URL (XPTV 无嗅探位, 待真机验)
-    return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, Referer: REFERER }] });
+    // 无真流地址: 返回空 (绝不回 watch 页 URL 当播放地址)。
+    return jsonify({ urls: [], headers: [] });
   }
   const tapped = lines.find((l) => l.idx === wantIdx && (l.v || 0) === wantV) || lines.find((l) => l.idx === wantIdx);
   const best = lines[0];

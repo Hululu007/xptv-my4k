@@ -331,16 +331,25 @@ function clean(s) {
 
 
 function extractPic(inner) {
-  for (const attr of ['data-original', 'data-src', 'src']) {
-    const m = inner.match(new RegExp(attr + "=['\"]([^'\"]+)['\"]", 'i'));
-    if (m) {
-      const cand = m[1].trim();
-      if (cand && !['loading.jpg', 'loading.png', 'placeholder', 'default'].some((b) => cand.toLowerCase().includes(b))) {
-        if (cand.startsWith('/')) return CDN + cand;
-        return cand;
+  // 首页轮播卡内含 ambient prev/current/next 三张图，第一张是上一张卡的封面；
+  // 只取非 ambient 的主图（bst-carousel-img / bst-card-cover 里的 img），否则封面错位一张
+  const bad = (tag) => /ambient/i.test(tag);
+  const pick = (tag) => {
+    for (const attr of ['data-original', 'data-src', 'src']) {
+      const m = tag.match(new RegExp(attr + "=['\"]([^'\"]+)['\"]", 'i'));
+      if (m) {
+        const cand = m[1].trim();
+        if (cand && !['loading.jpg', 'loading.png', 'placeholder', 'default'].some((b) => cand.toLowerCase().includes(b))) {
+          if (cand.startsWith('/')) return CDN + cand;
+          return cand;
+        }
       }
     }
-  }
+    return '';
+  };
+  const imgs = String(inner || '').match(/<img[^>]*>/gi) || [];
+  for (const tag of imgs) { if (!bad(tag)) { const u = pick(tag); if (u) return u; } }
+  for (const tag of imgs) { const u = pick(tag); if (u) return u; }
   return '';
 }
 
@@ -703,25 +712,28 @@ async function detail(reqIn) {
   let posterPic = '';
   const ap0 = extractArchivePlayer(html);
   if (ap0.posterImg) posterPic = normUrl(ap0.posterImg);
-  const dfdf = String(html || '').match(/dfdf\.tjacq\.com\/image\/[^\s"']+/g);
-  if (dfdf && dfdf.length) posterPic = normUrl('https://' + dfdf[0]);
   if (!posterPic) {
     const ogM = html.match(/property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
     if (ogM) posterPic = normUrl(ogM[1].trim());
   }
   if (!posterPic) {
-    const selfCard = parseCards(html, HOST).find((c) => c.id === rawId);
+    // 站方图床已从 dfdf.tjacq.com 迁到 n6hh66.sxtmo.com（详情页已无 dfdf 图）；
+    // 只在 posterImg/og:image 都取不到时才用页内第一张图，绝不覆盖 posterImg
+    const pgImg = String(html || '').match(/(?:dfdf\.tjacq\.com|n6hh66\.sxtmo\.com|mkdscvxr3w34\.sxtmo\.com)\/image\/[^\s"']+/);
+    if (pgImg) posterPic = normUrl('https://' + pgImg[0]);
+  }
+  if (!posterPic) {
+    const selfCard = parseCards(html, HOST).find((c) => c.vod_id === rawId);
     if (selfCard && selfCard.vod_pic) posterPic = selfCard.vod_pic;
   }
-  // 三条可选线（站方每片只给一条单码率播单，三线是同一播单的三条送达腿，不编造多档）：
+  // 两条可选线（站方每片只给一条单码率播单，两线是同一播单的两条送达腿，不编造多档）：
   // Worker——播单走 mogu-hls Worker 改写 + 分片透传（REX 1.0.5 正片线同款，用户真机已证能播）；
-  // 直连——dfdf 播单直出（REX 1.0.5 直连集同款）；本地代理——蜘蛛 /proxy/* 全程字节代理（v2 原样保留作兜底）。
+  // 直连——播单直出（REX 1.0.5 直连集同款）。
+  // 本地代理线已删：XPTV 无本地蜘蛛服务，proxyUrl 拼出的 js2p:// 地址在 XPTV 里是死链。
   const playLines = [];
   if (playUrl) {
     playLines.push({ group: 'Worker', name: '正片', url: workerUrl(playUrl) });
     playLines.push({ group: '直连', name: '正片', url: playUrl });
-    const proxied = proxyUrl(reqIn, '/proxy/m3u8', playUrl, durl);
-    if (proxied) playLines.push({ group: '本地代理', name: '正片', url: proxied });
   }
   return {
     list: [{
@@ -1151,9 +1163,10 @@ async function getTracks(ext) {
     const tracks = [];
     let d = null;
     try { d = await detail({ body: { id } }); } catch (e) { d = null; }
-    const playUrl = __s(d && d.vod_play_url);
+    const vod0 = (d && Array.isArray(d.list) && d.list[0]) || null;
+    const playUrl = __s(vod0 && vod0.vod_play_url);
     if (playUrl) {
-    const from = __s(d.vod_play_from || '');
+    const from = __s(vod0 && vod0.vod_play_from || '');
     const groups = from ? from.split('$$$') : [];
     const segs = playUrl.split('$$$');
     segs.forEach((seg, gi) => {
@@ -1163,7 +1176,7 @@ async function getTracks(ext) {
             const di = ep.indexOf('$');
             const nm = di > 0 ? ep.slice(0, di) : '正片';
             const tname = gname ? (eps.length > 1 ? gname + '-' + nm : gname) : nm;
-            tracks.push({ name: tname, pan: '', ext: { url: '', id: ep, name: nm } });
+            tracks.push({ name: tname, pan: '', ext: { url: ep, id: ep, name: nm } });
         }
     });
     }
@@ -1172,7 +1185,7 @@ async function getTracks(ext) {
 
 async function getPlayinfo(ext) {
     ext = argsify(ext);
-    const id = __s(ext.id || '');
+    const id = __s(ext.url || ext.id || '');
     const name = __s(ext.name || '');
     if (!id) return jsonify({ urls: [], headers: [] });
     let r = null;

@@ -5,11 +5,45 @@
 // 播放两路：① mee 播放器 iframe → 确定性 master https://<mee18player.com|meeplayer.com>/hlsr2/<40位hex>/master
 // （1080p 单档，音视频分离，须给 master 本身）；② 无码路 upload18 播放器 → 播放时现取
 // window.PLAYER_CONFIG.m3u8（helvid.com 直链，手机 UA，token 约 30 分钟）；
-// 注意：mee 分片是 545 字节 PNG 头包裹的真 TS，猫源靠本地代理剥头才能从头播/快进；XPTV 没有服务端，
-// 本文件只能给 master 直链——此前在 Mira 上能播，但严格内核可能不从头播、无法快进，属已知限制；
+// 注意：mee 分片是 545 字节 PNG 头包裹的真 TS（.jpg 后缀、image/jpeg），播放器直触原地址
+// 建不起时间轴、播不了；改走 Cloudflare Worker 24jav-hls（见
+// ~/workspace/xptv_batch/workers/24jav-hls.js）：代理 master、剥 PNG 头、分片以 .ts 出
+// （video/mp2t，支持 Range）；Worker 须用户部署后 mee 线才可用，部署步骤见 Worker 文件头；
+// upload18 线不走 Worker，仍直接出 helvid 直链（VM 侧 embed 页 403，设备侧待真机验证）；
 // 带字幕（仅番号条目）。
 const HOST = 'https://www4.24-jav.com';
+const WORKER = 'https://24jav-hls.li768435813.workers.dev'; // 部署见 ~/workspace/xptv_batch/workers/24jav-hls.js（用户自己部署）
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+// 纯 JS base64url 编码（不用 Buffer，XPTV 沙箱未必有 Buffer）。
+function b64urlEncode(s) {
+    const bytes = [];
+    const str = String(s || '');
+    for (let i = 0; i < str.length; i++) {
+        const code = str.charCodeAt(i);
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+            const lo = str.charCodeAt(i + 1);
+            if (lo >= 0xdc00 && lo <= 0xdfff) {
+                const cp = 0x10000 + ((code - 0xd800) << 10) + (lo - 0xdc00);
+                bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+                i++;
+            } else bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        } else bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    }
+    const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+        out += abc[(n >> 18) & 63] + abc[(n >> 12) & 63] + (i + 1 < bytes.length ? abc[(n >> 6) & 63] : '') + (i + 2 < bytes.length ? abc[n & 63] : '');
+    }
+    return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function meeWorkerUrl(master, referer) {
+    return WORKER + '/m3u8?u=' + b64urlEncode(master) + '&r=' + b64urlEncode(referer || HOST + '/');
+}
 const UA_MOB = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/604.1.14 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1';
 const U18_REFERER = 'https://upload18.com/';
 
@@ -555,7 +589,8 @@ async function getTracks(ext) {
             const master = masterUrl(mee);
             const variants = parseMasterVariants(await getText(master));
             const label = variants.length ? variants[0].label : '正片';
-            tracks.push({ name: label, pan: '', ext: { url: durl + '@@' + master, name: title } });
+            // mee 线走 24jav-hls Worker（剥 PNG 头、分片出 .ts），前缀 w: 供 getPlayinfo 识别。
+            tracks.push({ name: label, pan: '', ext: { url: durl + '@@w:' + meeWorkerUrl(master, durl), name: title } });
         } else {
             const embed = extractUpload18(html);
             if (embed) tracks.push({ name: '正片', pan: '', ext: { url: durl + '@@u18:' + embed, name: title } });
@@ -588,24 +623,30 @@ async function getPlayinfo(ext) {
         if (target.indexOf('u18:') === 0) {
             const m3u8 = await resolveUpload18(target.slice(4));
             if (m3u8) return withSubs(m3u8, UA_MOB, U18_REFERER);
-            return jsonify({ urls: [durl || HOST + '/'], headers: [{ 'User-Agent': UA, 'Referer': durl || HOST + '/' }] });
+            return jsonify({ urls: [], headers: [] });
+        }
+        if (target.indexOf('w:') === 0) {
+            // mee 线已是 Worker 代理地址，直接出（Worker 须先部署）。
+            return withSubs(target.slice(2), UA, durl || HOST + '/');
+        }
+        if (/^https?:\/\/(mee18player\.com|meeplayer\.com)\/hlsr2\//.test(target)) {
+            // 旧 track 或直连 master：同样包进 Worker。
+            return withSubs(meeWorkerUrl(target, durl || HOST + '/'), UA, durl || HOST + '/');
         }
         if (!target || target === durl) {
             const html = await getHtml(durl || id);
             const mee = extractMeeMd5(html);
-            if (mee) target = masterUrl(mee);
-            else {
-                const embed = extractUpload18(html);
-                if (embed) {
-                    const m3u8 = await resolveUpload18(embed);
-                    if (m3u8) return withSubs(m3u8, UA_MOB, U18_REFERER);
-                }
-                return jsonify({ urls: [durl || HOST + '/'], headers: [{ 'User-Agent': UA, 'Referer': durl || HOST + '/' }] });
+            if (mee) return withSubs(meeWorkerUrl(masterUrl(mee), durl || HOST + '/'), UA, durl || HOST + '/');
+            const embed = extractUpload18(html);
+            if (embed) {
+                const m3u8 = await resolveUpload18(embed);
+                if (m3u8) return withSubs(m3u8, UA_MOB, U18_REFERER);
             }
+            return jsonify({ urls: [], headers: [] });
         }
-        return withSubs(target, UA, durl || HOST + '/');
+        return jsonify({ urls: [], headers: [] });
     } catch (e) {
-        return jsonify({ urls: [durl || id], headers: [{ 'User-Agent': UA, 'Referer': durl || HOST + '/' }] });
+        return jsonify({ urls: [], headers: [] });
     }
 }
 

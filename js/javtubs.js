@@ -5,8 +5,13 @@
 // 播放链：详情页 hidden #links = base64(embed URL)，POST /get_link.php 取 embed；
 // 主腿 earnvidjavgg.xyz（VidHide）：embed 页内 packed JS 解包出 hls2 master（480p/720p/1080p 多档），
 // 分片明文 TS，签名 36h；VidHide 播单 token 绑 IP——master 必须与取 embed 页同一次调用连续取；
-// play() 点播时现解现取，绝不用详情时缓存的地址；master 取数失败回 master 本身让播放器再试；
-// v3 的 dramiyos-cdn 本地代理在 XPTV 里没有服务端，改走直出回落（RM 重编码片可能转圈）；
+// play() 点播时现解现取，绝不用详情时缓存的地址；
+// dramiyos-cdn 的线在 XPTV 里无代理走不通：getPlayinfo 最多重铸 3 次优先取 acek-cdn 的线，
+// 3 次都只有 dramiyos-cdn 时直接返回空（不列播不了的线）；acek-cdn 的线直出。
+// VM 侧注意：VidHide token 绑取嵌页那次请求的出口 IP，VM 出口 IP 每次连接都可能变，
+// 故 VM 侧 master 一律 403（acek/dramiyos、换 Referer/UA/Cookie 均 403），VM 验不出流，
+// 须以用户设备真机为准；不要拿 VM 403 当设备失败，也不要为此建 Worker 中转
+// （VidHide 中转从结构上就是死的，javtubs-hls v1 腿已死，不要复活）。
 // 带字幕（有番号）。
 const HOST = 'https://javtubs.com';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -681,6 +686,23 @@ async function subSearch(title) {
     return subMerge(bag);
 }
 
+function isAcekMaster(u) { return /acek-cdn\.com/i.test(String(u || '')); }
+function isDramiyosMaster(u) { return /dramiyos-cdn\.com/i.test(String(u || '')); }
+
+// 点播时现铸 master：最多重铸 3 次，优先取 acek-cdn 的线；
+// 3 次都只有 dramiyos-cdn（XPTV 无代理走不通）时返回空，不列播不了的线。
+async function resolveFreshPreferAcek(durl) {
+    let dramiyos = null;
+    for (let i = 0; i < 3; i++) {
+        const fr = await resolveFresh(durl);
+        if (!fr.master) continue;
+        if (isAcekMaster(fr.master)) return fr;
+        if (isDramiyosMaster(fr.master) && !dramiyos) dramiyos = fr;
+        if (!isDramiyosMaster(fr.master) && !isAcekMaster(fr.master)) return fr;
+    }
+    return dramiyos ? { tiers: dramiyos.tiers, embed: dramiyos.embed, master: '', dramiyosOnly: true } : { tiers: [], embed: '', master: '' };
+}
+
 async function getConfig() {
     return jsonify({
         ver: 1,
@@ -740,9 +762,10 @@ async function getPlayinfo(ext) {
         return jsonify(result);
     };
     try {
-        const fr = await resolveFresh(durl);
+        const fr = await resolveFreshPreferAcek(durl);
         if (want === 'app' || !fr.master) {
-            return jsonify({ urls: [fr.embed || durl], headers: [{ 'User-Agent': UA, 'Referer': fr.embed || durl }] });
+            // 无可用 master（dramiyos-only 或取数失败）：不回页面地址、不回 embed 页，直接空。
+            return jsonify({ urls: [], headers: [] });
         }
         let url = '';
         try {
@@ -752,7 +775,7 @@ async function getPlayinfo(ext) {
         if (!url) url = fr.master;
         return withSubs(url, fr.embed);
     } catch (e) {
-        return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        return jsonify({ urls: [], headers: [] });
     }
 }
 

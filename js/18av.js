@@ -2,6 +2,10 @@
 // 转换自 mira-cat nodejs/src/spider/video/py_18av.js
 // 站点 https://18av.mm-cg.com（主备 6 域同站镜像，failover）；18+ 门页靠静态 Cookie
 // YES_Eighteen=IamOverEighteenYearsOld（每请求都带，门页重现时从 gate 页 JS 重解析）；
+// 注意：VM 侧 6 域全部连接超时（curl 000，站方拦 VM 出口），VM 无法验证列表/解密/播放链，
+// 设备侧用户说内容能出、只是播不了；本文件只修链路形态，不改解密逻辑。
+// failover 必须是并行的：原串行 6 域 × 每域多次取页、无超时，域挂时一次 getCards 要等数分钟；
+// 现 6 域并行竞速、每请求 12s 超时，首个成功即返，全部失败才回空。
 // 分类：中文字幕/有碼AV/無碼AV/素人AV/無碼破解/H動畫/國產自拍 7 个顶级；384/605 题材与 12 片商筛选在 XPTV 里不展；
 // 列表 /zh/{区}_list/all/{N}.html；搜索 /zh/fc_search/all/{词}/{N}.html；
 // 播放链：详情页 mvarr['10_1']（1080p）/['11_1']（720p)，加密串经 decrypto（hcdeedg252 为底、hadeedg252 异或）
@@ -69,9 +73,9 @@ function pageHeaders(origin) {
     };
 }
 
-async function rawGet(url, headers) {
+async function rawGet(url, headers, timeoutMs) {
     try {
-        const r = await $fetch.get(url, { headers });
+        const r = await $fetch.get(url, { headers, timeout: timeoutMs || 12000 });
         if (r && r.status >= 200 && r.status < 300) {
             const d = r.data;
             if (typeof d === 'string') return d;
@@ -85,28 +89,31 @@ function isGatePage(html) {
     return !!html && html.indexOf('fwin_dialog_submit') !== -1;
 }
 
-async function getHtmlForOrigin(origin, path) {
+async function getHtmlForOrigin(origin, path, timeoutMs) {
+    const to = timeoutMs || 12000;
     const url = origin + path;
-    let html = await rawGet(url, pageHeaders(origin));
+    let html = await rawGet(url, pageHeaders(origin), to);
     if (isGatePage(html)) {
-        const g = await rawGet(origin + GATE_PATH, pageHeaders(origin));
+        const g = await rawGet(origin + GATE_PATH, pageHeaders(origin), to);
         const cm = g && g.match(/([A-Za-z0-9_]+)=IamOverEighteenYearsOld/);
         if (cm) ageCookie = cm[1] + '=IamOverEighteenYearsOld';
-        html = await rawGet(url, pageHeaders(origin));
+        html = await rawGet(url, pageHeaders(origin), to);
     }
     return isGatePage(html) ? '' : html;
 }
 
+// 6 域并行竞速：首个成功即返；全部失败才回空。不用 setTimeout（沙箱未必有），
+// 用“首个成功 race”+“全部 settled 兜底 race”实现。
 async function getHtml(url) {
     const path = pathOf(url);
     const first = originOf(url) || SITE;
     const order = [first];
     for (const d of DOMAINS) if (d !== first) order.push(d);
-    for (let i = 0; i < order.length; i++) {
-        const html = await getHtmlForOrigin(order[i], path);
-        if (html) return html;
-    }
-    return '';
+    const attempts = order.map((origin) => getHtmlForOrigin(origin, path, 12000));
+    const never = new Promise(() => {});
+    const firstOk = Promise.race(attempts.map((p) => p.then((h) => (h ? h : never))));
+    const allDone = Promise.all(attempts).then((arr) => { for (const h of arr) if (h) return h; return ''; });
+    return Promise.race([firstOk, allDone]);
 }
 
 function parsePosts(html) {
@@ -319,16 +326,21 @@ async function detailHtmlRetry(durl) {
     const order = [first];
     for (const d of DOMAINS) if (d !== first) order.push(d);
     const tries = order.slice(0, 3);
-    let firstHtml = '';
-    for (const origin of tries) {
-        const html = await getHtmlForOrigin(origin, path);
-        if (!firstHtml) firstHtml = html;
-        if (html) {
-            const plays = extractPlay(html);
-            if (plays.length) return { html, plays };
+    const attempts = tries.map((origin) => getHtmlForOrigin(origin, path, 12000));
+    const never = new Promise(() => {});
+    const firstOk = Promise.race(attempts.map((p) => p.then((h) => {
+        if (h && extractPlay(h).length) return { html: h, plays: extractPlay(h) };
+        return never;
+    })));
+    const allDone = Promise.all(attempts).then((arr) => {
+        let firstHtml = '';
+        for (const h of arr) {
+            if (!firstHtml) firstHtml = h;
+            if (h && extractPlay(h).length) return { html: h, plays: extractPlay(h) };
         }
-    }
-    return { html: firstHtml, plays: [] };
+        return { html: firstHtml, plays: [] };
+    });
+    return Promise.race([firstOk, allDone]);
 }
 
 const SUB_UA = UA;
@@ -740,7 +752,7 @@ async function getPlayinfo(ext) {
     });
     async function resolveFromPlayUrl(playUrl) {
         if (!playUrl) return { media: '', used: '' };
-        const html = await rawGet(playUrl, playHeaders(durl));
+        const html = await rawGet(playUrl, playHeaders(durl), 15000);
         if (!html) return { media: '', used: '' };
         const srcs = [];
         const re = /\{src: '([^']+)',type: 'application\/x-mpegURL', size: (\d+)\}/g;
@@ -757,10 +769,10 @@ async function getPlayinfo(ext) {
             const p = plays.find((x) => x.res === wantRes) || plays[0];
             if (p) r = await resolveFromPlayUrl(p.playUrl);
         }
-        if (!r.media) return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        if (!r.media) return jsonify({ urls: [], headers: [] });
         return withSubs(r.media, r.used);
     } catch (e) {
-        return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        return jsonify({ urls: [], headers: [] });
     }
 }
 

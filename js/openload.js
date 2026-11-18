@@ -10,6 +10,8 @@
 // （须探活 master + variant 全链，死链判 DEAD 不交播放器）；streamtape 取 robotlink 拼 get_video，
 // 点播时跟 302 拿 tapecontent 直链 MP4；vsembed 走站内下载 API（/api/download/tiers 取真实档位 1080p/720p/540p，
 // /api/download/get 302 到直链 MP4，点播时现取现跟）；dood / javstream 等解不出直链的回站内嵌页嗅探；
+// 2026-11-18 修：getPlayinfo 绝不返回嵌页/详情页地址当播放地址（解不出真流就返回空）；探活 403 不判死链，
+// 签名 master 的 token 绑 ASN/IP，当前出口不匹配时 master 照样 403，设备单出口 IP 上可能正常，照常返回真流地址。
 // 带字幕（有番号）。
 const HOST = 'https://openload.mov';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -159,7 +161,26 @@ function unpackDetailEmbeds(html) {
 }
 
 function hostOf(url) {
-    try { return new URL(url).hostname.toLowerCase(); } catch (e) { return ''; }
+    // 不用 new URL：XPTV 沙箱与本地 harness 未必提供 URL 全局（实测 vm 沙箱里
+    // typeof URL 为 undefined，旧 hostOf 抛错被 catch 吃掉回 ''，导致所有
+    // embed 都判 sniff、getPlayinfo 只能回嵌页地址）。纯正则取 host。
+    const m = String(url || '').match(/^[a-z][a-z0-9+.-]*:\/\/([^\/:?#]+)/i);
+    return m ? m[1].toLowerCase() : '';
+}
+
+function resolveUrl(u, base) {
+    u = String(u || '').trim();
+    if (!u) return '';
+    if (/^https?:\/\//i.test(u)) return u;
+    if (u.indexOf('//') === 0) return 'https:' + u;
+    const b = String(base || '');
+    if (u.charAt(0) === '/') {
+        const m = b.match(/^(https?:\/\/[^\/]+)/i);
+        return (m ? m[1] : '') + u;
+    }
+    const idx = b.lastIndexOf('/');
+    const dir = idx >= 0 ? b.slice(0, idx + 1) : b + '/';
+    return dir + u;
 }
 
 const DEAD_HOSTS = ['asianclub.tv', 'vidoza.net', 'streamsb.net'];
@@ -179,12 +200,13 @@ function isStreamtape(h) {
 async function probeHlsText(url, referer) {
     try {
         const r = await $fetch.get(url, { headers: headers(referer), timeout: 6000 });
-        if (r && r.status === 200 && r.data) {
+        if (r && r.data) {
             const s = String(r.data);
-            if (s.indexOf('#EXTM3U') === 0) return s;
+            if (r.status === 200 && s.indexOf('#EXTM3U') === 0) return { ok: true, status: 200, text: s };
+            return { ok: false, status: r.status || 0, text: s };
         }
     } catch (e) {}
-    return '';
+    return { ok: false, status: 0, text: '' };
 }
 
 function firstVariantUri(masterText, masterUrl) {
@@ -196,7 +218,7 @@ function firstVariantUri(masterText, masterUrl) {
                 const u = lines[j].trim();
                 if (!u) continue;
                 if (u.charAt(0) === '#') break;
-                try { return new URL(u, masterUrl).toString(); } catch (e) { return u; }
+                return resolveUrl(u, masterUrl);
             }
             return '';
         }
@@ -205,13 +227,21 @@ function firstVariantUri(masterText, masterUrl) {
 }
 
 async function probeHlsChain(masterUrl, referer) {
+    // 返回 'live' | 'forbidden' | 'dead'：403 是签名 token 的 ASN/IP 绑定
+    // 在当前出口不匹配（VM 侧常见：token asn=13335，VM 出口 AS394192），
+    // 不是链路已死，不作死链判；404/超时/空/非 M3U8 才是死链。
     const m = await probeHlsText(masterUrl, referer);
-    if (!m) return false;
-    if (m.indexOf('#EXTINF') >= 0) return true;
-    const v = firstVariantUri(m, masterUrl);
-    if (!v) return true;
-    const vt = await probeHlsText(v, referer);
-    return !!vt;
+    if (m.ok) {
+        if (m.text.indexOf('#EXTINF') >= 0) return 'live';
+        const v = firstVariantUri(m.text, masterUrl);
+        if (!v) return 'live';
+        const vt = await probeHlsText(v, referer);
+        if (vt.ok) return 'live';
+        if (vt.status === 403) return 'forbidden';
+        return 'dead';
+    }
+    if (m.status === 403) return 'forbidden';
+    return 'dead';
 }
 
 async function resolveHg(embed) {
@@ -228,18 +258,20 @@ async function resolveHg(embed) {
         const hls2 = (up.match(/"hls2"\s*:\s*"([^"]+)"/) || [])[1] || '';
         const hls3 = (up.match(/"hls3"\s*:\s*"([^"]+)"/) || [])[1] || '';
         const hls4 = (up.match(/"hls4"\s*:\s*"([^"]+)"/) || [])[1] || '';
+        // 探活 403 不判死：签名 token 绑 ASN/IP，当前出口不匹配时 master 照样 403，
+        // 但设备上（单出口 IP）可能正常，照常返回 master 由播放器再试；只有
+        // 404/超时/空/非 M3U8 的死链才判 DEAD（op-1042218 教训仍保留）。
         if (hls2) {
-            if (await probeHlsChain(hls2, embed)) return hls2;
+            if ((await probeHlsChain(hls2, embed)) !== 'dead') return hls2;
             return 'DEAD';
         }
         if (hls3) {
-            if (await probeHlsChain(hls3, embed)) return hls3;
+            if ((await probeHlsChain(hls3, embed)) !== 'dead') return hls3;
             return 'DEAD';
         }
         if (hls4) {
-            let u = hls4;
-            try { u = new URL(hls4, embed).toString(); } catch (e) {}
-            if (await probeHlsChain(u, embed)) return u;
+            const u = resolveUrl(hls4, embed);
+            if ((await probeHlsChain(u, embed)) !== 'dead') return u;
             return 'DEAD';
         }
     }
@@ -324,7 +356,8 @@ async function followRedirect(url, referer) {
             }
         } catch (e) {}
         if (loc) {
-            try { cur = new URL(loc, cur).toString(); } catch (e) { return ''; }
+            cur = resolveUrl(loc, cur);
+            if (!cur) return '';
             if (isMediaFileUrl(cur)) return cur;
             continue;
         }
@@ -864,6 +897,7 @@ async function getPlayinfo(ext) {
         }
         return jsonify(result);
     };
+    const empty = () => jsonify({ urls: [], headers: [] });
     try {
         let durl = '';
         let embed = id;
@@ -877,10 +911,20 @@ async function getPlayinfo(ext) {
             durl = parts[0];
             embed = parts[1];
         }
+        // 裸站内详情页（网页播放兜底行）：重拉详情页取首条 embed 再解；无 embed 则空
         if (embed.indexOf('openload.mov') >= 0 && embed.indexOf('/op-') >= 0) {
-            return jsonify({ urls: [embed], headers: [{ 'User-Agent': UA, 'Referer': embed }] });
+            const html = await getHtml(embed);
+            const d = parseDetail(html, embed);
+            if (d.embeds && d.embeds.length) {
+                durl = embed;
+                embed = d.embeds[0];
+                oldUrl = '';
+            } else {
+                return empty();
+            }
         }
-        if (embed.indexOf('http') !== 0) return jsonify({ urls: [embed], headers: [{ 'User-Agent': UA, 'Referer': embed }] });
+        // 绝不返回页面地址当播放地址：解不出真流就返回空
+        if (embed.indexOf('http') !== 0) return empty();
         if (hostOf(embed) === 'vsembed.com') {
             let tier = /^\d+p$/.test(oldUrl || '') ? oldUrl : '';
             if (!tier) {
@@ -893,11 +937,15 @@ async function getPlayinfo(ext) {
                 const u = await vsDownloadUrl(embed, tier);
                 if (u) return withSubs(u, embed);
             }
-            return jsonify({ urls: [embed], headers: [{ 'User-Agent': UA, 'Referer': embed }] });
+            return empty();
         }
         if (isDirectMedia(embed) && !oldUrl) {
             return withSubs(embed, durl || embed);
         }
+        // 点播时对点的这条线重新现解：HG 系取新鲜 hls2 签名 master，
+        // ST 取 get_video 后跟 302 拿 tapecontent 直链，VS 走下载 API；
+        // 现解出的真流地址直接返回，不再用探活二次拦截（探活 403 只是
+        // token 的 ASN/IP 绑定在当前出口不匹配，不是链路已死）。
         let r = null;
         try {
             r = await resolveEmbed(embed);
@@ -914,6 +962,8 @@ async function getPlayinfo(ext) {
             }
             return withSubs(playUrl, embed);
         }
+        // 现解失败：回详情时旧直链兜底；m3u8 旧链只拦死链（404/超时/非 M3U8），
+        // 403（ASN 绑定）不拦，宁可交给播放器再试，也不返回嵌页地址。
         if (oldUrl && isDirectMedia(oldUrl)) {
             let playUrl = oldUrl;
             if (oldUrl.indexOf('/get_video?') >= 0) {
@@ -923,15 +973,15 @@ async function getPlayinfo(ext) {
                 } catch (e) {}
             }
             if (playUrl.indexOf('.m3u8') >= 0) {
-                let ok = false;
-                try { ok = await probeHlsChain(playUrl, embed); } catch (e) {}
-                if (!ok) return jsonify({ urls: [embed], headers: [{ 'User-Agent': UA, 'Referer': embed }] });
+                let st = 'dead';
+                try { st = await probeHlsChain(playUrl, embed); } catch (e) {}
+                if (st === 'dead') return empty();
             }
             return withSubs(playUrl, durl || embed);
         }
-        return jsonify({ urls: [embed], headers: [{ 'User-Agent': UA, 'Referer': embed }] });
+        return empty();
     } catch (e) {
-        return jsonify({ urls: [id], headers: [{ 'User-Agent': UA, 'Referer': id }] });
+        return empty();
     }
 }
 

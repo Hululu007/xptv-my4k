@@ -1,10 +1,13 @@
 // 柚子短剧 - XPTV csp 格式（csp_youzidj）
 // 转换自 mira-cat nodejs/src/spider/video/youzidj.js（py_youzidj），站点 https://youzidj.com
-// 播放主链（同猫版）：POST /api/account/bootstrap 建访客会话（JSON 对象 body）→
-// POST /api/playback/{videoId}?mode=native 换 m3u8，两步都靠响应 Set-Cookie（eden_account / eden_play_*）。
-// 注意：$fetch 是否回传响应头/Set-Cookie 未证实——取不到 Cookie 时按猫版兜底回集页面 URL 走嗅探。
+// 播放主链（同猫版，补上猫版缺的年龄确认）：POST /api/account/bootstrap 建访客会话（JSON 对象 body）→
+// POST /age-check（表单 decision=accepted，带 Origin + Sec-Fetch 头）取年龄确认 cookie →
+// POST /api/playback/{videoId}?mode=native 换流地址（相对路径 /media/.../native-current.mp4，
+// 站方 307 跳到 master.m3u8），三步的 cookie（访客 + 年龄 + 播放）都带在播放头里。
+// 注意：年龄确认只在 303 跳转响应里 Set-Cookie，$fetch 须回 303 原响应（opts 带 redirect:'manual'）才能取到；
+// 若运行时的 $fetch 强制跟随跳转、取不到该 cookie，播放会 403，只能走 Worker 中转（见下）。
+// 拿不到流返回空，绝不回集页面地址。
 // $fetch.post 待真机验（本地 harness 已实测请求真能通）。
-// 嗅探型播放降级：回源页 URL，待真机验
 const SITE = 'https://youzidj.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const REFERER = SITE + '/';
@@ -34,6 +37,7 @@ const appConfig = {
 };
 
 let accountPair = '';
+let agePair = '';
 
 function t(v) {
     return String(v == null ? '' : v).trim();
@@ -103,6 +107,39 @@ async function ensureAccount(force) {
         return accountPair;
     }
     return accountPair || '';
+}
+
+// 年龄确认：POST /age-check 表单，成功 303 + Set-Cookie 年龄确认 cookie。
+// 该 cookie 只在 303 响应里出现：opts 带 redirect:'manual'，让 $fetch 回 303 原响应而非跟随跳转；
+// 若运行时强制跟随跳转、取不到该 cookie，播放会 403，只能走 Worker 中转。
+async function ensureAge(epUrl, acct, force) {
+    if (!force && agePair) return agePair;
+    let path = '/';
+    try { path = new URL(epUrl).pathname; } catch (e) {}
+    const body = 'return_to=' + encodeURIComponent(path) + '&decision=accepted';
+    const headers = {
+        'User-Agent': UA,
+        'Referer': epUrl,
+        'Origin': SITE,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Dest': 'document',
+    };
+    if (acct) headers['Cookie'] = acct;
+    try {
+        const r = await $fetch.post(SITE + '/age-check', body, { headers: headers, redirect: 'manual' });
+        const h = r.headers || r.header || {};
+        const raw = h['set-cookie'] || h['Set-Cookie'] || (typeof h.getSetCookie === 'function' ? h.getSetCookie() : null) || (typeof h.get === 'function' ? h.get('set-cookie') : null);
+        const sc = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+        const c = pickCookie(sc, 'eden_age_');
+        if (c) {
+            agePair = c.pair;
+            return agePair;
+        }
+    } catch (e) {}
+    return '';
 }
 
 function parseCards(html) {
@@ -226,26 +263,39 @@ async function getPlayinfo(ext) {
     if (!id) return jsonify({ urls: [], headers: [] });
     if (id.includes('$')) id = id.split('$').pop().trim();
     const epUrl = fixUrl(id);
-    const sniff = () => jsonify({ urls: [epUrl], headers: [{ 'User-Agent': UA, 'Referer': REFERER }] });
+    const empty = () => jsonify({ urls: [], headers: [] });
 
     const html = await getHtml(epUrl);
     const vm = html && html.match(/data-video="([0-9a-f\-]{36})"/);
-    if (!vm) return sniff();
+    if (!vm) return empty();
     const videoId = vm[1];
     const pm = html.match(/data-price="([^"]*)"/);
     const price = pm ? pm[1] : '0';
+    if (price !== '0') return empty();
 
     let acct = await ensureAccount(false);
-    let r = await postJson(SITE + '/api/playback/' + videoId + '?mode=native', epUrl, acct);
-    if (r.status === 401 && acct) {
+    let age = await ensureAge(epUrl, acct, false);
+    if (!acct || !age) return empty();
+
+    const playOnce = async (cookie) => {
+        return postJson(SITE + '/api/playback/' + videoId + '?mode=native', epUrl, cookie);
+    };
+    let r = await playOnce([acct, age].filter(Boolean).join('; '));
+    if (r.status === 401) {
         acct = await ensureAccount(true);
-        r = await postJson(SITE + '/api/playback/' + videoId + '?mode=native', epUrl, acct);
+        r = await playOnce([acct, age].filter(Boolean).join('; '));
     }
-    if (r.status === 402 || price !== '0') return sniff();
+    if (r.status === 403) {
+        // 年龄确认过期/失效：重做一次年龄确认再试
+        age = await ensureAge(epUrl, acct, true);
+        if (!age) return empty();
+        r = await playOnce([acct, age].filter(Boolean).join('; '));
+    }
+    if (r.status === 402) return empty();
     const data = r.data && typeof r.data === 'object' ? r.data : null;
     const playCookie = pickCookie(r.setCookie, 'eden_play_');
-    if (r.status !== 200 || !data || !data.url || !playCookie) return sniff();
-    const cookie = [acct, playCookie.pair].filter(Boolean).join('; ');
+    if (r.status !== 200 || !data || !data.url || !playCookie) return empty();
+    const cookie = [acct, age, playCookie.pair].filter(Boolean).join('; ');
     return jsonify({
         urls: [fixUrl(data.url)],
         headers: [{ 'User-Agent': UA, 'Referer': epUrl, 'Cookie': cookie }],

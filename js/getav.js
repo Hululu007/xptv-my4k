@@ -65,6 +65,23 @@ function parseCards(html) {
     const list = [];
     const seen = {};
     if (!html) return list;
+    // 封面兜底：首屏外卡片的 <img> 不在 SSR HTML 里（只有骨架占位），封面只存在于页内
+    // Next.js 数据的 localImg 路径（/images/cover/<番号>_<hash>.jpg，308 跳 worldstatic 原图）；
+    // 路径自带番号，先全页建 slug→localImg 映射，img 缺失时用它补封面（2026-11-18 实测 40 卡仅 5 张有 img）。
+    const localImg = {};
+    const liRe = /\/images\/cover\/([A-Za-z0-9\-]+)_[0-9a-f]+\.jpg/gi;
+    let liM;
+    while ((liM = liRe.exec(html))) {
+        localImg[liM[1].toLowerCase()] = liM[0];
+    }
+    function picFor(href, imgSrc) {
+        if (imgSrc) return imgSrc;
+        const slug = String(href || '').split('/').pop().toLowerCase();
+        const li = localImg[slug] || '';
+        if (!li) return '';
+        if (/^https?:\/\//i.test(li)) return li;
+        return HOST + (li.charAt(0) === '/' ? li : '/' + li);
+    }
     const cardRe = /<div class="group cursor-pointer[\s\S]*?<a[^>]*href="(\/zh\/videos\/[\w\-]+)"[^>]*>([\s\S]*?)<\/a>\s*<a[^>]*href="\/zh\/videos\/[\w\-]+"[^>]*>([\s\S]*?)<\/a>/gi;
     let m;
     while ((m = cardRe.exec(html))) {
@@ -82,6 +99,7 @@ function parseCards(html) {
             pic = im[1].replace(/&amp;/g, '&');
             if (pic.startsWith('//')) pic = 'https:' + pic;
         }
+        pic = picFor(href, pic);
         list.push({
             vod_id: href,
             vod_name: title,
@@ -103,6 +121,7 @@ function parseCards(html) {
             let pic = '';
             const im = inner.match(/<img[^>]*src="([^"]+)"/i);
             if (im) pic = im[1].replace(/&amp;/g, '&');
+            pic = picFor(href, pic);
             list.push({ vod_id: href, vod_name: title, vod_pic: pic, vod_remarks: '', ext: { id: href } });
         }
     }
@@ -117,6 +136,7 @@ function parseCards(html) {
             seen[href] = 1;
             let pic = m[2].replace(/&amp;/g, '&');
             if (pic.startsWith('//')) pic = 'https:' + pic;
+            pic = picFor(href, pic);
             list.push({ vod_id: href, vod_name: title, vod_pic: pic, vod_remarks: '', ext: { id: href } });
         }
     }

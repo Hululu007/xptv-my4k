@@ -231,8 +231,28 @@ async function getPlayinfo(ext) {
     if (src && /^https?:\/\//i.test(src)) {
         return jsonify({ urls: [src], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
     }
-    // 兜底（猫版 parse:1 嗅探页面本身）: XPTV 无嗅探位，降级回页面 URL
-    return jsonify({ urls: [pageUrl], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
+    // 播放改走官方 playback API（2026-11-18 实测）：单视频 POST /api/videos/{id}/playback，
+    // 短剧分集 POST /api/videos/{id}/episodes/{n}/playback，JSON 空 body，data.streams.main 即 m3u8。
+    // SSR 的 videoSrc 已为空，旧兜底回页面 URL 只会让播放器加载一个 HTML 页，故不再回页面 URL。
+    let apiUrl = '';
+    const dm = path.match(/^\/drama\/(\d+)\/(\d+)\/$/);
+    const vm = path.match(/^\/video\/(\d+)\/$/);
+    if (dm) apiUrl = HOST + '/api/videos/' + dm[1] + '/episodes/' + dm[2] + '/playback';
+    else if (vm) apiUrl = HOST + '/api/videos/' + vm[1] + '/playback';
+    if (apiUrl) {
+        try {
+            const { data } = await $fetch.post(apiUrl, '{}', {
+                headers: { 'Content-Type': 'application/json', 'User-Agent': UA, 'Referer': pageUrl, 'Accept': 'application/json' },
+            });
+            let d = data;
+            if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+            const main = d && d.data && d.data.streams && d.data.streams.main;
+            if (main && /^https?:\/\//i.test(main)) {
+                return jsonify({ urls: [String(main)], headers: [{ 'User-Agent': UA, 'Referer': HOST + '/' }] });
+            }
+        } catch (e) {}
+    }
+    return jsonify({ urls: [], headers: [] });
 }
 
 async function search(ext) {

@@ -673,8 +673,9 @@ async function subSearch(title) {
 // ---------------- XPTV 适配层 ----------------
 // 猫源 home/category/detail/play/search 原样保留；以下 5 个 XPTV 入口做薄适配。
 async function getConfig() {
-    const h = await home();
-    const tabs = (h && Array.isArray(h.class) ? h.class : []).map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
+    // 静态 tabs：CATS 即全部分类（12 条，2026-11-18 实测与首页一致）；getConfig 不再拉 670KB 首页，
+    // 真机入口不再等首页加载。列表/播放仍走原 home/category/detail 链路。
+    const tabs = CATS.map((c) => ({ name: String(c.type_name || ''), ext: { id: String(c.type_id || '') } }));
     return jsonify({ ver: 1, title: 'Perverzija', site: 'https://tube.perverzija.com', tabs: tabs.length ? tabs : [{ name: '全部', ext: { id: '' } }] });
 }
 

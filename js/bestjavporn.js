@@ -7,11 +7,39 @@
 // 降级/待验项:
 //   - $fetch.post 待真机验 (仓内两源均无 POST 先例): 铸造库未命中时经 Worker /post
 //     或 $fetch.post 直连 POST /api/play/ 现铸, 请求线格式逐字沿用猫版。
-//   - XPTV 契约无嗅探位: 铸造全灭时 getPlayinfo 降级回 watch 页 URL 本身,
-//     待真机验 XPTV 是否嗅探非媒体 URL。
+//   - 铸造全灭时 getPlayinfo 返回空 (2026-11-18 起不再回 watch 页 URL,
+//     页面地址绝不当播放地址)。
 //   - 猫版多通道竞速与定时重试 (own 三发间隔) 一律改串行, 无 setTimeout 参与逻辑;
 //     诊断卡/诊断集名丢弃, 集名保持干净; 字幕聚合未移植 (getPlayinfo 契约无 subs 位)。
 //   - 线路结果带 180 秒内存缓存 (仅加速, 未命中即整链重算, 不依赖跨调用传状态)。
+// URL 全局缺失时的最小兜底: 部分 JS 沙箱 (如裸 vm 上下文) 不提供 URL,
+// 本文件多处用 new URL 取 hostname/pathname/search, 无 URL 时那些分支会静默失效。
+// 真实运行时已有 URL 时此段不生效。仅支持 http(s) URL, pathname/search 可改写,
+// toString() 按当前各段重建。
+if (typeof URL === 'undefined') {
+    var URL = function (u, base) {
+        let s = String(u || '');
+        if (base && !/^[a-z][a-z0-9+.-]*:/i.test(s)) {
+            const b = String(base);
+            if (s.slice(0, 2) === '//') { s = 'https:' + s; }
+            else if (s.charAt(0) === '/') { const m0 = b.match(/^(https?:\/\/[^\/]+)/i); s = (m0 ? m0[1] : '') + s; }
+            else { s = b.replace(/[^\/]*$/, '') + s; }
+        }
+        if (s.slice(0, 2) === '//') s = 'https:' + s;
+        const m = s.match(/^(https?:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/i);
+        if (!m) throw new Error('Invalid URL');
+        this.protocol = (m[1] || 'https:').toLowerCase();
+        this.hostname = (m[2] || '').toLowerCase();
+        this.port = m[3] || '';
+        this.pathname = m[4] || '/';
+        this.search = m[5] || '';
+        this.hash = m[6] || '';
+        this.host = this.hostname + (this.port ? ':' + this.port : '');
+        this.origin = this.protocol + '//' + this.host;
+        this.href = s;
+        this.toString = function () { return this.protocol + '//' + this.host + this.pathname + this.search + this.hash; };
+    };
+}
 const HOST = 'https://www.bestjavporn.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const REFERER = HOST + '/';
@@ -2068,13 +2096,29 @@ function validFor(kind, html) {
     return validListPage(html);
 }
 
+// 单请求超时 (有 setTimeout 的运行时才生效; 无则原样等待, 不报错)。
+// 挂起的通道 (直连 POST 等) 会拖死整条链, 超时即按通道失败处理。
+const REQ_TIMEOUT_MS = 10000;
+function withTimeout(promise, ms) {
+    if (typeof setTimeout !== 'function') return promise;
+    let timer = null;
+    const timeoutP = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ __timeout: true }), ms);
+        if (timer && typeof timer.unref === 'function') { try { timer.unref(); } catch (e) {} }
+    });
+    return Promise.race([promise, timeoutP]).then((r) => {
+        if (timer) { try { clearTimeout(timer); } catch (e) {} }
+        return r;
+    });
+}
+
 // $fetch 统一原语: data 对象/字符串两兼容, 回 {status, body(字符串)}。
 async function rawReq(url, headers, method, body) {
     try {
         let r;
-        if (method === 'POST') r = await $fetch.post(url, body, { headers: headers || {} });
-        else r = await $fetch.get(url, { headers: headers || {} });
-        if (!r) return { status: 0, body: '' };
+        if (method === 'POST') r = await withTimeout($fetch.post(url, body, { headers: headers || {} }), REQ_TIMEOUT_MS);
+        else r = await withTimeout($fetch.get(url, { headers: headers || {} }), REQ_TIMEOUT_MS);
+        if (!r || r.__timeout) return { status: 0, body: '' };
         const d = r.data;
         let s = '';
         if (typeof d === 'string') s = d;
@@ -2320,9 +2364,10 @@ function dexUtf8(seed, data) {
     return bytesToUtf8(b64ToBytes(mid));
 }
 
-// embed 页 data-config 解密: key = reverse( b64( b64(pathname+search).substr(4,20) + '_0x59a0e4' ) )
+// embed 页 data-config 解密: key = reverse( b64( b64(pathname+search).substring(6,22) + '_0x59a0e4' ) )
+// 2026-11-18 实测修正: 站方 main.js 现用 (6,22), 旧 (4,20) 解出乱码 (两站实测坐实)。
 function decryptConfig(cfgB64, pathname, search) {
-    const arg = strToB64(String(pathname) + String(search)).substring(4, 20);
+    const arg = strToB64(String(pathname) + String(search)).substring(6, 22);
     const key = strToB64(arg + '_0x59a0e4').split('').reverse().join('');
     const pt = bytesToLatin1(rc4(key, b64ToBytes(cfgB64)));
     const json = JSON.parse(bytesToUtf8(b64ToBytes(pt)));
@@ -2613,14 +2658,8 @@ async function getTracks(ext) {
     catch (e) { rl = { html: '', lines: [], stage: 'error' }; }
     const lines = rl.lines || [];
     if (!lines.length) {
-        // 铸造链没拿到线路: 单条网页嗅探兜底 (点播时整链重试, 仍不行落 watch 页)。
-        const title = '网页嗅探·' + (STAGE_TEXT[rl.stage] || '铸造失败');
-        return jsonify({
-            list: [{
-                title,
-                tracks: [{ name: '正片', pan: '', ext: { id: durl + '@@sniff', flag: title } }],
-            }],
-        });
+        // 铸造链没拿到线路: 返回空 (绝不回 watch 页 URL 当播放地址)。
+        return jsonify({ list: [] });
     }
     // 清晰度分组: 每档一个 group (title=档位, 降序, 首组最高档); 组内沿用全局序。
     const qGroups = new Map();
@@ -2644,10 +2683,6 @@ async function getTracks(ext) {
         });
         groups.push({ title, tracks });
     }
-    groups.push({
-        title: '网页嗅探·兜底',
-        tracks: [{ name: '播放', pan: '', ext: { id: durl + '@@sniff', flag: '网页嗅探·兜底' } }],
-    });
     return jsonify({ list: groups });
 }
 
@@ -2656,7 +2691,6 @@ async function getPlayinfo(ext) {
     let id = t(ext.id);
     if (!id) return jsonify({ urls: [], headers: [] });
     if (id.includes('$')) id = id.split('$').pop().trim();
-    if (id.endsWith('@@sniff')) id = id.slice(0, -'@@sniff'.length);
     const mm = id.match(/^(https?:\/\/\S+?)@@(\d+)(?:\.(\d+))?$/);
     const durl = mm ? mm[1] : absUrl(id);
     const wantIdx = mm ? parseInt(mm[2], 10) : -1;
@@ -2664,8 +2698,8 @@ async function getPlayinfo(ext) {
     let lines = [];
     try { lines = (await resolveLines(durl)).lines || []; } catch (e) { lines = []; }
     if (!lines.length) {
-        // 嗅探兜底降级: 回 watch 页 URL (XPTV 无嗅探位, 待真机验)。
-        return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, Referer: REFERER }] });
+        // 无真流地址: 返回空 (绝不回 watch 页 URL 当播放地址)。
+        return jsonify({ urls: [], headers: [] });
     }
     // 借线顶替守卫 (沿用猫版): 点的线与最优线同组才尊重选择, 否则回最优线
     // (借线绑定型令牌在设备必 403)。

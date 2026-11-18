@@ -6,6 +6,8 @@
 // {endpoint:"/video/{tid}/playback", ticket:"p1.{tid}.0.{ts}.{hash}"}，POST 该 endpoint
 // （ticket 表单体，头 X-Requested-With + Referer embed 页）返回 sources 单档 720p，
 // src 为相对地址须补 javtiful.com 绝对地址，302 跳 R2 直链 MP4；站内无多档，不编造档位；
+// getTracks 不铸票（只给详情页地址），ticket 只在 getPlayinfo 点播时现取现投，POST 失败
+// 重取 embed 页拿新票再投一次；解不出真流返回空，绝不把嵌页/详情页地址当播放地址返回。
 // 带字幕（有番号）。
 const HOST = 'https://javlust.net';
 const TIFUL = 'https://javtiful.com';
@@ -101,25 +103,30 @@ async function fetchPlayback(durl, html) {
     const em = html.match(/javtiful\.com\/embed\/(\d+)/i);
     if (!em) return null;
     const embedUrl = TIFUL + '/embed/' + em[1];
-    const ehtml = await getText(embedUrl, durl);
-    if (!ehtml) return null;
-    const pm = ehtml.match(/"playback"\s*:\s*\{\s*"endpoint"\s*:\s*"([^"]+)"\s*,\s*"ticket"\s*:\s*"([^"]+)"/i);
-    if (!pm) return null;
-    const endpoint = pm[1].indexOf('http') === 0 ? pm[1] : TIFUL + pm[1];
-    try {
-        const r = await $fetch.post(endpoint, 'ticket=' + encodeURIComponent(pm[2]), {
-            headers: {
-                'User-Agent': UA,
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': embedUrl,
-            },
-        });
-        const j = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-        if (j && j.success && Array.isArray(j.sources) && j.sources.length) {
-            return { sources: j.sources, embedUrl };
-        }
-    } catch (e) {}
+    // 票据约 30 分钟：每次点播都重取 embed 页拿新票、现投现用；
+    // POST 失败再重取一次（票据可能在取页与投递之间过期）。
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const ehtml = await getText(embedUrl, durl);
+        if (!ehtml) continue;
+        const ep = ehtml.match(/"endpoint"\s*:\s*"([^"]+)"/i);
+        const tk = ehtml.match(/"ticket"\s*:\s*"([^"]+)"/i);
+        if (!ep || !tk) continue;
+        const endpoint = ep[1].indexOf('http') === 0 ? ep[1] : TIFUL + ep[1];
+        try {
+            const r = await $fetch.post(endpoint, 'ticket=' + encodeURIComponent(tk[1]), {
+                headers: {
+                    'User-Agent': UA,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': embedUrl,
+                },
+            });
+            const j = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            if (j && j.success && Array.isArray(j.sources) && j.sources.length) {
+                return { sources: j.sources, embedUrl };
+            }
+        } catch (e) {}
+    }
     return { sources: null, embedUrl };
 }
 
@@ -512,13 +519,25 @@ async function getPlayinfo(ext) {
         const html = await getText(durl, HOST + '/');
         const pb = html ? await fetchPlayback(durl, html) : null;
         if (pb && pb.sources && pb.sources.length) {
-            const s0 = pb.sources[0];
-            const abs = String(s0.src || '').indexOf('http') === 0 ? s0.src : TIFUL + s0.src;
-            return withSubs(abs, TIFUL + '/');
+            // 首选带 src 的档；只有 fallbackSrc 时用它；都没有则返回空，
+            // 绝不把嵌页/详情页地址当播放地址返回。
+            let src = '';
+            for (const s of pb.sources) {
+                if (s && s.src) { src = s.src; break; }
+            }
+            if (!src) {
+                for (const s of pb.sources) {
+                    if (s && s.fallbackSrc) { src = s.fallbackSrc; break; }
+                }
+            }
+            if (src) {
+                const abs = String(src).indexOf('http') === 0 ? src : TIFUL + src;
+                return withSubs(abs, TIFUL + '/');
+            }
         }
-        return jsonify({ urls: [(pb && pb.embedUrl) || durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        return jsonify({ urls: [], headers: [] });
     } catch (e) {
-        return jsonify({ urls: [durl], headers: [{ 'User-Agent': UA, 'Referer': durl }] });
+        return jsonify({ urls: [], headers: [] });
     }
 }
 

@@ -97,18 +97,6 @@
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/mrds.js"
     },
     {
-      "name": "蝙蝠视频",
-      "type": 3,
-      "api": "csp_bianfu",
-      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/bianfu.js"
-    },
-    {
-      "name": "八卦",
-      "type": 3,
-      "api": "csp_bagua",
-      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/bagua.js"
-    },
-    {
       "name": "茄子精品",
       "type": 3,
       "api": "csp_qiezi",
@@ -125,12 +113,6 @@
       "type": 3,
       "api": "csp_sanjipian",
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/sanjipian.js"
-    },
-    {
-      "name": "我秀直播",
-      "type": 3,
-      "api": "csp_woxiu",
-      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/woxiu.js"
     },
     {
       "name": "星梦ASMR",
@@ -155,12 +137,6 @@
       "type": 3,
       "api": "csp_cableav",
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/cableav.js"
-    },
-    {
-      "name": "AvHub",
-      "type": 3,
-      "api": "csp_avhub",
-      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/avhub.js"
     },
     {
       "name": "Chaturbate",
@@ -277,12 +253,6 @@
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/porncgw.js"
     },
     {
-      "name": "X红颜",
-      "type": 3,
-      "api": "csp_xhongyan",
-      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/xhongyan.js"
-    },
-    {
       "name": "肉视频",
       "type": 3,
       "api": "csp_rou",
@@ -343,12 +313,6 @@
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javideo.js"
     },
     {
-      "name": "JAVSB",
-      "type": 3,
-      "api": "csp_javsb",
-      "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/javsb.js"
-    },
-    {
       "name": "JAVHDPorn",
       "type": 3,
       "api": "csp_javhdporn",
@@ -389,8 +353,7 @@
       "type": 3,
       "api": "csp_upload5",
       "ext": "https://raw.githubusercontent.com/lailai0001/xptv-my4k/refs/heads/main/js/upload5.js"
-    }
-,
+    },
     {
       "name": "AV01",
       "type": 3,
