@@ -15,7 +15,11 @@
 const CryptoJS = createCryptoJS();
 
 const HOST = 'https://honeypeach.cc';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+const UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+// 2026-11-19：蜜桃握手与签名接口绑定客户端出口 IP。直连握手会被站方拒收
+// （PoW 解对了也只换回新 challenge，永不下发 sid/skey），故走猫版同款
+// mitao-handshake Worker 全接口代理（握手+签名同一固定出口）；Worker 失败回落直连。
+const HS_WORKER = 'https://mitao-handshake.li768435813.workers.dev';
 
 // ---------------- PoW: FNV-1a 32bit, 与服务端握手算法一致（同猫版） ----------------
 function hpHash(s) {
@@ -145,6 +149,18 @@ async function fetchText(url, headers) {
     }
 }
 
+// 先走 mitao-handshake Worker（固定出口，签名头原样转发），Worker 无有效回包再直连。
+// Worker 只放行 honeypeach.cc 的 /api/* 与 /cover/*，本站请求均合规。
+async function hsFetchJson(url, extraHeaders) {
+    if (HS_WORKER) {
+        try {
+            const w = await fetchJson(HS_WORKER + '/?u=' + encodeURIComponent(url), extraHeaders);
+            if (w && typeof w === 'object' && Object.keys(w).length > 0) return w;
+        } catch (e) {}
+    }
+    return fetchJson(url, extraHeaders);
+}
+
 // 会话工厂：每次入口调用新建（无跨调用全局状态），闭包内缓存 sid/skey 供本次调用内复用
 function createSession() {
     const sess = { sid: '', skey: '', exp: 0 };
@@ -154,11 +170,11 @@ function createSession() {
         if (sess.sid && sess.skey && now < sess.exp - 60) return true;
         for (let attempt = 0; attempt < 3; attempt++) {
             const dev = newDev();
-            let d = await fetchJson(HOST + '/api/handshake?dev=' + encodeURIComponent(dev));
+            let d = await hsFetchJson(HOST + '/api/handshake?dev=' + encodeURIComponent(dev));
             if (d && d.need_chal) {
                 const tok = hpSolve(String(d.need_chal), parseInt(d.bits || '16', 10));
                 if (!tok) continue;
-                d = await fetchJson(HOST + '/api/handshake?dev=' + encodeURIComponent(dev) + '&c=' + encodeURIComponent(tok));
+                d = await hsFetchJson(HOST + '/api/handshake?dev=' + encodeURIComponent(dev) + '&c=' + encodeURIComponent(tok));
             }
             if (d && d.sid && d.skey) {
                 sess.sid = String(d.sid);
@@ -179,7 +195,7 @@ function createSession() {
         const canon = ['GET', path, qs, bodyHash, ts, nonce, sess.sid].join('\n');
         const sig = CryptoJS.HmacSHA256(canon, CryptoJS.enc.Hex.parse(sess.skey)).toString(CryptoJS.enc.Hex);
         const url = HOST + path + (qs ? '?' + qs : '');
-        const res = await fetchJson(url, {
+        const res = await hsFetchJson(url, {
             'X-Hp-Sid': sess.sid,
             'X-Hp-Ts': ts,
             'X-Hp-Nonce': nonce,
@@ -209,11 +225,16 @@ function createSession() {
 function formatCover(mod, url) {
     if (!url) return '';
     const u = String(url);
+    let abs;
     if (mod === 'live' || u.startsWith('/') || u.indexOf('://') === -1) {
-        if (u.startsWith('/')) return HOST + u;
-        return u;
+        if (u.startsWith('/')) abs = HOST + u;
+        else abs = u;
+    } else {
+        abs = HOST + '/cover/' + mod + '?u=' + encodeURIComponent(u);
     }
-    return HOST + '/cover/' + mod + '?u=' + encodeURIComponent(u);
+    // 封面也走 mitao-handshake Worker（猫版同款）：直连 honeypeach.cc 封面在设备上加载不出
+    if (HS_WORKER) return HS_WORKER + '/?u=' + encodeURIComponent(abs);
+    return abs;
 }
 
 function parseCatTriple(raw, fallback) {
