@@ -72,7 +72,16 @@ async function getHtml(url, referer) {
     // 2026-11-19 设备侧修正：不强制 r.status === 200——设备 $fetch 的 status
     // 可能为 undefined，旧写法会把已拿到手的真 HTML 也跳过；只以 looksRealHtml 为准。
     // r.data 若被解析成对象则序列化后再判。
+    // 2026-11-19 再修：直连放首腿——设备是住宅 IP，直连 missav.fans 最可能
+    // 直接拿到真 HTML（VM 直连亦 200/12 卡）；Worker 腿作兜底。末腿不再
+    // “非真 HTML 也返回”（旧写法直连拿到 CF 验证页也会返回，parseCards
+    // 见 Just a moment 即空，列表恒空）。
     const asText = (d) => (typeof d === 'string' ? d : (d == null ? '' : JSON.stringify(d)));
+    try {
+        const r = await $fetch.get(url, { headers: h, timeout: 15000 });
+        const txt = asText(r && r.data);
+        if (looksRealHtml(txt)) return txt;
+    } catch (e) {}
     try {
         const r = await $fetch.get(MISSAV_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
         const txt = asText(r && r.data);
@@ -89,14 +98,7 @@ async function getHtml(url, referer) {
         const txt = asText(r && r.data);
         if (looksRealHtml(txt)) return txt;
     } catch (e) {}
-    try {
-        const { data } = await $fetch.get(url, { headers: h, timeout: 15000 });
-        const txt = asText(data);
-        if (looksRealHtml(txt)) return txt;
-        return txt;
-    } catch (e) {
-        return '';
-    }
+    return '';
 }
 
 function cleanText(s) {

@@ -165,13 +165,12 @@ async function category(reqIn) {
   // 类下（2026-11-19 实测：该类 21 卡里 18 卡标题含【中文字幕】，如 DLDSS-163）。
   // english-subtitle 全类只有 21 部、仅 1 页，单靠它中文字幕 tab 只有 18 条、
   // 翻页即空（用户 2026-11-19 报“加载不出更多内容”）。
-  // 2026-11-19 改：首页 /zh/ 列表本身多页（?p=2/?p=3 均有）且每页含多部
-  // 【中文字幕】片（p1 实测 28 处），中文字幕 tab 改以首页列表为翻页主源、
-  // 按标题含“中文字幕”过滤；第 1 页另并取 english-subtitle 与
-  // chinese-subtitle 页（站方日后补归类即自动并入），按 vod_id 去重。
+  // 2026-11-19 改：首页 /zh/ 列表多页（?p=2/?p=3 均有），中字片散落在首页
+  // 各页（p1 约 10 部，p2/p3 各约 1-2 部）；本 tab 按页向前扫描首页列表、
+  // 逐页收集标题含“中文字幕”的片，凑满 20 条或连扫 5 页即停，翻页有内容。
+  // 第 1 页另并取 english-subtitle 与 chinese-subtitle 页（站方日后补归类
+  // 即自动并入），按 vod_id 去重。
   if (zoneId === 'genres/chinese-subtitle') {
-    const homePath = page === 1 ? '/zh/' : ('/zh/?p=' + page);
-    const homeHtml = await getHtml(homePath);
     const seen = new Set();
     const list = [];
     if (page === 1) {
@@ -187,13 +186,25 @@ async function category(reqIn) {
         list.push(v);
       }
     }
-    for (const v of parseCards(homeHtml)) {
-      if (seen.has(v.vod_id)) continue;
-      if (String(v.vod_name || '').indexOf('中文字幕') < 0) continue;
-      seen.add(v.vod_id);
-      list.push(v);
+    // 向前扫描首页列表：从第 page 页起，凑满 20 条或连扫 5 页即停
+    let next = false;
+    let hp = page;
+    let scanned = 0;
+    while (list.length < 20 && scanned < 5) {
+      const homePath = hp === 1 ? '/zh/' : ('/zh/?p=' + hp);
+      const homeHtml = await getHtml(homePath);
+      if (!homeHtml) break;
+      for (const v of parseCards(homeHtml)) {
+        if (seen.has(v.vod_id)) continue;
+        if (String(v.vod_name || '').indexOf('中文字幕') < 0) continue;
+        seen.add(v.vod_id);
+        list.push(v);
+      }
+      next = hasNextPage(homeHtml, hp);
+      scanned++;
+      if (!next) break;
+      hp++;
     }
-    const next = hasNextPage(homeHtml, page);
     return { page, pagecount: next ? page + 1 : page, list };
   }
   let path;

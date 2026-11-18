@@ -1065,16 +1065,32 @@ function stdHeaders(extra) {
   };
 }
 
-// 取文本: $fetch 单通道 (猫版 req/fetch 双通道合并; timeout 丢弃)
+// 取文本: 直连优先，失败时走 html-relay / jina 兜底。
+// 2026-11-19：旧版只有直连单通道，设备侧直连失败即详情页取不到、
+// getTracks 返回空（用户报 BigButtsHub 点开无线路）。site-fetch 白名单
+// 无 bigbuttshub.com 且站方拦 CF 出口，故不用 site-fetch，改走
+// html-relay 与 jina（非 CF 出口）兜底。
 async function getText(url, headers, minLen, timeoutMs) {
   const h = stdHeaders(headers);
   const need = minLen == null ? 200 : minLen;
+  const ok = (txt) => typeof txt === 'string' && txt.length >= need;
   try {
     const { data, status } = await $fetch.get(url, { headers: h });
     if ((status === 200 || status === undefined) && data) {
       const txt = typeof data === 'string' ? data : String(data);
-      if (txt.length >= need) return txt;
+      if (ok(txt)) return txt;
     }
+  } catch (e) { /* ignore */ }
+  try {
+    const r = await $fetch.get('https://html-relay.li768435813.workers.dev/?url=' + encodeURIComponent(url), { headers: h, timeout: 20000 });
+    const txt = typeof r.data === 'string' ? r.data : String(r.data || '');
+    if (ok(txt)) return txt;
+  } catch (e) { /* ignore */ }
+  try {
+    const h2 = Object.assign({}, h, { 'x-respond-with': 'html' });
+    const r = await $fetch.get('https://r.jina.ai/' + url, { headers: h2, timeout: 20000 });
+    const txt = typeof r.data === 'string' ? r.data : String(r.data || '');
+    if (ok(txt)) return txt;
   } catch (e) { /* ignore */ }
   return '';
 }
