@@ -551,6 +551,9 @@ async function detail(reqIn) {
     const url = /^https?:\/\//i.test(raw) ? raw : HOST + String(raw).replace(/^\/+/, '');
     // 镜像优先：先读 lookup.json 定位分类、只取一个分类文件（不再全量拉取）；
     // 索引缺失或查不到时回落全量镜像；命中则直接用镜像里的按钮跑播放链，不碰详情页
+    // 2026-11-19：lookup 取不到（镜像不可达）时不再拉全量 14 个分类文件——
+    // 同一镜像源不可达时全量也取不到，白白拖慢详情页（设备侧 getTracks
+    // 超时即无轨）；只有 lookup 成功但未命中时才回落全量。
     const path = toMirrorPath(raw);
     let hit = null;
     const lookup = await fetchMirrorLookup();
@@ -558,7 +561,7 @@ async function detail(reqIn) {
       const mj = await fetchMirrorJson(lookup[path].s);
       if (mj) hit = mj.items.find(it => toMirrorPath(it.path) === path) || null;
     }
-    if (!hit) {
+    if (!hit && lookup) {
       const allMirror = await fetchAllMirror();
       hit = allMirror.find(it => toMirrorPath(it.path) === path);
     }
