@@ -377,6 +377,13 @@ async function getTracks(ext) {
             ext: { url: 'javct:' + fsrc + '|' + episode + '|' + pt + '|' + pk, name: title, durl: durl },
         });
     }
+    // 2026-11-19：F4 线已死（Worker /f4 取 f4scdn 回 502，设备侧直出也因分片要 Origin 而必死），
+    // 把 F4 沉底，优先 FL / ST 等线，默认播放不再首选死线。
+    tracks.sort((a, b) => {
+        const fa = /f4/i.test(a.name || '') ? 1 : 0;
+        const fb = /f4/i.test(b.name || '') ? 1 : 0;
+        return fa - fb;
+    });
     return jsonify({ list: [{ title: '在线播放', tracks: tracks }] });
 }
 
