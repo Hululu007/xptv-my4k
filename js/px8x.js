@@ -70,10 +70,47 @@ function decodeHtml(s) {
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
 }
 
-/** base64 解码 (站方 d() = atob + escape/decodeURIComponent, 等价于按 UTF-8 解码) */
+/** base64 解码 (站方 d() = atob + escape/decodeURIComponent, 等价于按 UTF-8 解码)
+ * 2026-11-19：旧版用 Buffer.from（XPTV 运行时无 Buffer），设备侧 b64decode
+ * 恒抛错、decodePage 把全部 document.write 替换成空串，列表恒空（用户报
+ * Px8x 首页最新一片空白）。改纯 JS：优先 atob + decodeURIComponent 做
+ * UTF-8 解码，atob 不可用时走手动 base64 解码，绝不碰 Buffer。 */
 function b64decode(s) {
   try {
-    return Buffer.from(String(s || ''), 'base64').toString('utf8');
+    s = String(s || '').replace(/\s/g, '');
+    if (!s) return '';
+    let bin = '';
+    if (typeof atob === 'function') {
+      bin = atob(s);
+    } else {
+      // 手动 base64 解码（无 atob 时的兜底）
+      const tbl = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      const rev = {};
+      for (let i = 0; i < tbl.length; i++) rev[tbl.charAt(i)] = i;
+      let bits = 0, nbits = 0;
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charAt(i);
+        if (c === '=') break;
+        const v = rev[c];
+        if (v === undefined) continue;
+        bits = (bits << 6) | v;
+        nbits += 6;
+        if (nbits >= 8) {
+          nbits -= 8;
+          bin += String.fromCharCode((bits >> nbits) & 0xFF);
+        }
+      }
+    }
+    // UTF-8 解码：把每个字节 percent-encode 后 decodeURIComponent
+    try {
+      let pct = '';
+      for (let i = 0; i < bin.length; i++) {
+        pct += '%' + ('00' + bin.charCodeAt(i).toString(16)).slice(-2);
+      }
+      return decodeURIComponent(pct);
+    } catch (e) {
+      return bin;
+    }
   } catch (e) {
     return '';
   }

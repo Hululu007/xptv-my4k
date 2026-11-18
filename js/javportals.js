@@ -163,25 +163,37 @@ async function category(reqIn) {
   // 中文字幕：站方 genres/chinese-subtitle 页本身是空的（站方显示“暂无影片”，
   // /zh/ 与 /en/、p=1/p=2 均 0 卡），但中字片实际被错归到 english-subtitle
   // 类下（2026-11-19 实测：该类 21 卡里 18 卡标题含【中文字幕】，如 DLDSS-163）。
-  // 本 tab 改取 english-subtitle 页、按标题含“中文字幕”过滤；同时并取
+  // english-subtitle 全类只有 21 部、仅 1 页，单靠它中文字幕 tab 只有 18 条、
+  // 翻页即空（用户 2026-11-19 报“加载不出更多内容”）。
+  // 2026-11-19 改：首页 /zh/ 列表本身多页（?p=2/?p=3 均有）且每页含多部
+  // 【中文字幕】片（p1 实测 28 处），中文字幕 tab 改以首页列表为翻页主源、
+  // 按标题含“中文字幕”过滤；第 1 页另并取 english-subtitle 与
   // chinese-subtitle 页（站方日后补归类即自动并入），按 vod_id 去重。
   if (zoneId === 'genres/chinese-subtitle') {
-    const cnPath = page === 1 ? '/zh/genres/chinese-subtitle/' : ('/zh/genres/chinese-subtitle/?p=' + page);
-    const enPath = page === 1 ? '/zh/genres/english-subtitle/' : ('/zh/genres/english-subtitle/?p=' + page);
-    const cnHtml = await getHtml(cnPath);
-    const enHtml = await getHtml(enPath);
+    const homePath = page === 1 ? '/zh/' : ('/zh/?p=' + page);
+    const homeHtml = await getHtml(homePath);
     const seen = new Set();
     const list = [];
-    for (const v of parseCards(cnHtml)) {
-      if (!seen.has(v.vod_id)) { seen.add(v.vod_id); list.push(v); }
+    if (page === 1) {
+      const cnHtml = await getHtml('/zh/genres/chinese-subtitle/');
+      const enHtml = await getHtml('/zh/genres/english-subtitle/');
+      for (const v of parseCards(cnHtml)) {
+        if (!seen.has(v.vod_id)) { seen.add(v.vod_id); list.push(v); }
+      }
+      for (const v of parseCards(enHtml)) {
+        if (seen.has(v.vod_id)) continue;
+        if (String(v.vod_name || '').indexOf('中文字幕') < 0) continue;
+        seen.add(v.vod_id);
+        list.push(v);
+      }
     }
-    for (const v of parseCards(enHtml)) {
+    for (const v of parseCards(homeHtml)) {
       if (seen.has(v.vod_id)) continue;
       if (String(v.vod_name || '').indexOf('中文字幕') < 0) continue;
       seen.add(v.vod_id);
       list.push(v);
     }
-    const next = hasNextPage(cnHtml, page) || hasNextPage(enHtml, page);
+    const next = hasNextPage(homeHtml, page);
     return { page, pagecount: next ? page + 1 : page, list };
   }
   let path;
