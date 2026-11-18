@@ -901,26 +901,18 @@ async function remintBest(comVideo) {
   }
 }
 
-// v9 腿 0：Worker /play 自铸整链探路（pimpbunny-stream v2 /play）。
-//   探路 Range 0-1023（5s 封顶）：206 且 content-type 为 video 即回该地址
-//   （Worker 60 秒缓存，播放器跟进即命中）；探不通回 ''，调用方回落 v8 旧腿。
-async function probeWorkerPlay(comVideo, labelNum) {
+// XPTV 修复 2026-11-19：Worker /play 地址直接拼出来交给播放器，不再
+//   用 $fetch 探路。猫源同款腿 0 在 MiraPlayer 里靠 axios 把 video/mp4
+//   当 text 读 Range 探 206 才回；XPTV 的 $fetch 在真机上这么读视频体
+//   不可靠（VM 垫片能过、真机未证实），探失败就跌进重铸/跟链腿，而那
+//   几腿要读 Set-Cookie，XPTV $fetch 不暴露、cookie 恒空，最终只会
+//   交出一条无 cookie 的 Worker /stream（403）或空——这就是猫源能播、
+//   XPTV 播不了的断点。Worker /play 自铸整链（VM 已验：无 Referer、
+//   无 Range 也 206；q 参数目前被 Worker 忽略，各档同一文件），
+//   直接交给播放器，与刚修好的 youzidj 同款做法。
+function workerPlayUrl(comVideo) {
   if (!STREAM_WORKER || !comVideo) return '';
-  try {
-    const q = labelNum > 0 ? ('&q=' + labelNum) : '';
-    const playUrl = STREAM_WORKER + '/play?u=' + encodeURIComponent(comVideo) + q;
-    const r = await $fetch.get(playUrl, {
-      headers: { 'User-Agent': UA, 'Referer': comVideo, 'Range': 'bytes=0-1023', 'Accept': 'video/mp4,video/*;q=0.9,*/*;q=0.8' },
-      timeout: 5000,
-      responseType: 'text',
-      transformResponse: [(d) => d],
-      validateStatus: () => true,
-    });
-    if (!r) return '';
-    const ct = String((r.headers && (r.headers['content-type'] || r.headers['Content-Type'])) || '');
-    if ((r.status === 206 || r.status === 200) && /video\//i.test(ct)) return playUrl;
-  } catch (e) {}
-  return '';
+  return STREAM_WORKER + '/play?u=' + encodeURIComponent(comVideo);
 }
 
 async function play(reqIn) {
@@ -948,10 +940,11 @@ async function play(reqIn) {
       const comVideo = parts[1] || '';
       const fileUrl = parts[2];
       const cookie = parts[3] || '';
-      // v9 腿 0：Worker /play 自铸整链（先探，206 即回；探不通回落旧腿）。
+      // v9 腿 0（XPTV 修复 2026-11-19）：Worker /play 自铸整链，直接回，
+      // 不探路（探路用的 $fetch 读视频体在真机上不可靠，见 workerPlayUrl
+      // 注释）。有 comVideo 就走这腿；无 comVideo 才往下走旧腿。
       if (comVideo) {
-        const q0 = parseInt((String(label || '').match(/(\d+)/) || [])[1] || '0', 10) || 0;
-        const wp = await probeWorkerPlay(comVideo, q0);
+        const wp = workerPlayUrl(comVideo);
         if (wp) {
           return { parse: 0, url: wp, header: { 'User-Agent': UA, 'Referer': comVideo } };
         }
@@ -1029,8 +1022,8 @@ async function play(reqIn) {
     // → Worker → 嗅探（无详情时刻令牌，腿 3/4 跳过）。
     const comVideo = parts[2] || (stream ? comVideoFromStream(stream) : '');
     if (comVideo) {
-      // v9 腿 0：Worker /play 自铸整链（最高档；探不通回落旧腿）。
-      const wp0 = await probeWorkerPlay(comVideo, 0);
+      // v9 腿 0（XPTV 修复 2026-11-19）：同上，直接回 Worker /play，不探路。
+      const wp0 = workerPlayUrl(comVideo);
       if (wp0) {
         return { parse: 0, url: wp0, header: { 'User-Agent': UA, 'Referer': comVideo } };
       }
