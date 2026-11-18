@@ -75,16 +75,21 @@ function headers(referer) {
 // 取到的 <source> token 绑 Worker IP，getPlayinfo 点播时仍会直连重取，
 // 所以这里的 Worker 腿只用来“拿到详情页、解析出档位”，不影响播放。
 async function getHtml(url, referer) {
+    const asText = (d) => (typeof d === 'string' ? d : (d ? JSON.stringify(d) : ''));
     try {
         const r = await $fetch.get(url, { headers: headers(referer) });
-        const data = r && r.data;
-        const t = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
+        const t = asText(r && r.data);
         if (t && t.length > 2000) return t;
     } catch (e) {}
     try {
         const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: headers(referer), timeout: 15000 });
-        const data = r && r.data;
-        const t = typeof data === 'string' ? data : (data ? JSON.stringify(data) : '');
+        const t = asText(r && r.data);
+        if (t && t.length > 2000) return t;
+    } catch (e) {}
+    // 2026-11-19：再加 jina 腿兜底（设备侧直连+Worker 都失败时，jina 常能拿到详情页）
+    try {
+        const r = await $fetch.get('https://r.jina.ai/' + url, { headers: Object.assign(headers(referer), { 'x-respond-with': 'html' }), timeout: 20000 });
+        const t = asText(r && r.data);
         if (t && t.length > 2000) return t;
     } catch (e) {}
     return '';
@@ -142,17 +147,18 @@ function cookieHeader(cookies) {
 }
 
 // 详情页 <source> 三档：有几档出几档，绝不硬编
+// 2026-11-19：src/label 的引号双/单都认（设备侧回的 HTML 引号风格可能与 VM 不同，旧正则只认 src 单引号+label 双引号）
 function parseSources(html) {
     const quals = [];
     const seen = new Set();
     if (!html) return quals;
-    const re = /<source[^>]+src='([^']+\.mp4[^']*)'[^>]*label="([^"]+)"[^>]*>/gi;
+    const re = /<source[^>]+src=(["'])([^"']+\.mp4[^"']*)\1[^>]*label=(["'])([^"']+)\3[^>]*>/gi;
     let m;
     while ((m = re.exec(html))) {
-        const label = t(m[2]);
+        const label = t(m[4]);
         if (!label || seen.has(label)) continue;
         seen.add(label);
-        quals.push({ label, url: m[1].replace(/&amp;/g, '&') });
+        quals.push({ label, url: m[2].replace(/&amp;/g, '&') });
     }
     quals.sort((a, b) => parseInt(b.label, 10) - parseInt(a.label, 10));
     return quals;
