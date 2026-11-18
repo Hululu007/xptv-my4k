@@ -5,6 +5,11 @@ const HOST = 'https://123av.com';
 const LANG = 'cn';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
 
+// 2026-11-19 封面：cover.jpg 走 sigua-img-proxy 透传（白名单含 icdn.123av.me，实测出真 JPEG）。
+// 注意：新发布/最近更新的新片 cover.jpg 站方尚未生成（实测 5 部新片 s1080/s360 双双 404），
+// 属站方生成延迟，无静态图可替；已生成封面的片（热门等）经代理可正常出图。
+const IMG_PROXY = 'https://sigua-img-proxy.li768435813.workers.dev/cover.jpg?u=';
+
 const appConfig = {
     ver: 1,
     title: '123AV',
@@ -56,6 +61,13 @@ function hiResCover(url) {
     return url.replace(/\/s360\//, '/s1080/');
 }
 
+function proxiedCover(url) {
+    url = t(url);
+    if (!url) return '';
+    if (url.indexOf('https://icdn.123av.me/') === 0) return IMG_PROXY + encodeURIComponent(url);
+    return url;
+}
+
 // 2026-11-19 根因：data-preview 看似 preview.png、实为 MP4 视频预览
 // （ftyp/isom 魔数，Content-Type 却谎报 image/png），播放器图片加载器
 // 解不出、封面全空。站内静态封面在同 hash/ID 的 img2 路径：
@@ -98,7 +110,7 @@ function parseList(html) {
         items.push({
             vod_id: 'javxx:' + link,
             vod_name: title,
-            vod_pic: hiResCover(pic),
+            vod_pic: proxiedCover(hiResCover(pic)),
             vod_remarks: dm ? t(dm[1]) : '',
             ext: { id: 'javxx:' + link },
         });

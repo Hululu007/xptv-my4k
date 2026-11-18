@@ -3,7 +3,18 @@
 // 封面走 bagua-img-proxy 代理前缀拼接（原样保留）；播放为详情页 data-config 中的直链（原画/H265）。
 const BASE = 'https://www.mrds66.com';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
-const IMG_PROXY = 'https://bagua-img-proxy.li768435813.workers.dev/img?url=';
+// 2026-11-19 封面根因：bagua-img-proxy 是 AES 解密代理，只认 pic.jtzatly.cn/pic.drleao.cn/pic.qnlycc.cn，
+// pic.gyezbp.cn（每日大赛封面）一律回 400 "Invalid URL"。照猫版 proxyCover：
+// pic.*.cn 走 51chigua 透传代理（实测出真 JPEG），其余走 bagua 解密代理。
+const IMG_PROXY_51 = 'https://51chigua.li768435813.workers.dev/img?url=';
+const IMG_PROXY_BAGUA = 'https://bagua-img-proxy.li768435813.workers.dev/img?url=';
+function proxyCover(url) {
+    url = String(url || '').trim();
+    if (!url) return '';
+    if (url.indexOf('51chigua.li768435813.workers.dev') >= 0 || url.indexOf('bagua-img-proxy') >= 0) return url;
+    if (/^https?:\/\/pic\.[^\/]*\.cn\//i.test(url)) return IMG_PROXY_51 + encodeURIComponent(url);
+    return IMG_PROXY_BAGUA + encodeURIComponent(url);
+}
 
 // 2026-11-19 三腿取数：用户手机直连 www.mrds66.com 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
 const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
@@ -73,7 +84,7 @@ function parseArticles(html) {
         if (!title) continue;
         let cover = '';
         const cm = /loadBannerDirect\('([^']+)'/.exec(block);
-        if (cm) cover = IMG_PROXY + encodeURIComponent(cm[1].replace(/([^:])\/{2,}/g, '$1/'));
+        if (cm) cover = proxyCover(cm[1].replace(/([^:])\/{2,}/g, '$1/'));
         items.push({
             vod_id: link,
             vod_name: title,

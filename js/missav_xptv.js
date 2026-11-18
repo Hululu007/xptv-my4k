@@ -7,7 +7,9 @@ const cheerio = createCheerio();
 const HOST = 'https://missav.fans';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/604.1.14 (KHTML, like Gecko)';
 
-// 2026-11-19 三腿取数：用户手机直连 missav.fans 失败（VM 全通）；site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+// 2026-11-19 四腿取数：猫版同款 missav-fetch 专用 Worker 优先（猫源正常走它），
+// 再 site-fetch Worker 腿 → jina 腿 → 直连，首个真 HTML 胜出。
+const MISSAV_FETCH = 'https://missav-fetch.li768435813.workers.dev';
 const SITE_FETCH = 'https://site-fetch.li768435813.workers.dev';
 function looksRealHtml(t) {
     return !!t && t.length > 2000 && !/Just a moment|Checking your browser|cf-challenge|__cf_chl|Attention Required|cf-wrapper|cf\.errors|Enable JavaScript and cookies/i.test(t);
@@ -67,6 +69,10 @@ function headers(referer) {
 
 async function getHtml(url, referer) {
     const h = headers(referer);
+    try {
+        const r = await $fetch.get(MISSAV_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
+        if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);
+    } catch (e) {}
     try {
         const r = await $fetch.get(SITE_FETCH + '/?u=' + encodeURIComponent(url), { headers: h, timeout: 12000 });
         if (r && r.status === 200 && looksRealHtml(String(r.data || ''))) return String(r.data);

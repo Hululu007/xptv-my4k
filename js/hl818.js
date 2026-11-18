@@ -9,7 +9,11 @@
 // 播放：dplayer 直链 parse:0 直出；仅有观看链接时为网页 URL（嗅探型播放降级：回源页 URL，待真机验）。
 const HOST = 'https://818hlw1.com/';
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-const IMG_PROXY = 'https://bagua-img-proxy.li768435813.workers.dev/img?url=';
+// 2026-11-19 封面根因：bagua-img-proxy 是 AES 解密代理，只认 pic.jtzatly.cn/pic.drleao.cn/pic.qnlycc.cn，
+// pic.gyezbp.cn（818/每日大赛封面）一律回 400 "Invalid URL"，且就算放行也会把正常图当加密图解密弄坏。
+// 照猫版 proxyCover：pic.*.cn 走 51chigua 透传代理（实测 pic.gyezbp.cn 出真 PNG/JPEG），其余走 bagua 解密代理。
+const IMG_PROXY_51 = 'https://51chigua.li768435813.workers.dev/img?url=';
+const IMG_PROXY_BAGUA = 'https://bagua-img-proxy.li768435813.workers.dev/img?url=';
 const RELAY_HL = 'https://javsb-relay.li768435813.workers.dev/hl?url=';
 
 const appConfig = {
@@ -46,8 +50,9 @@ function proxyCover(url) {
     url = String(url || '').trim();
     if (!url) return '';
     if (url.indexOf('data:') === 0) return url;
-    if (url.indexOf('bagua-img-proxy') >= 0) return url;
-    return IMG_PROXY + encodeURIComponent(url);
+    if (url.indexOf('51chigua.li768435813.workers.dev') >= 0 || url.indexOf('bagua-img-proxy') >= 0) return url;
+    if (/^https?:\/\/pic\.[^\/]*\.cn\//i.test(url)) return IMG_PROXY_51 + encodeURIComponent(url);
+    return IMG_PROXY_BAGUA + encodeURIComponent(url);
 }
 
 function isRealPage(html) {
@@ -192,13 +197,18 @@ async function getTracks(ext) {
     const url = /^https?:\/\//i.test(raw) ? raw : HOST.replace(/\/$/, '') + (raw.startsWith('/') ? raw : '/' + raw);
     const html = await getText(url);
     const plist = [];
-    const dre = /class="dplayer"[^>]*data-config='([^']+)'/gi;
+    // 2026-11-19 播放根因之二：站内 class 是 "mep3tuv dplayer"（多 class），
+    // 旧正则写死 class="dplayer" 永远 0 匹配；且 data-config 用双引号
+    // （data-config="{&quot;...}"），旧正则只认单引号。改多 class + 双引号/单引号
+    // 都认（\1 回指开引号），再反转义 &quot; 后解析。
+    const dre = /class="[^"]*dplayer[^"]*"[^>]*data-config=(["'])([\s\S]*?)\1/gi;
     let m;
     let c = 0;
     while ((m = dre.exec(html)) !== null) {
         c++;
         try {
-            const cfg = JSON.parse(m[1]);
+            const cfgStr = m[2].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+            const cfg = JSON.parse(cfgStr);
             const vu = (cfg && cfg.video && cfg.video.url) || '';
             if (vu) plist.push('视频' + c + '$' + vu);
         } catch (e) {}
