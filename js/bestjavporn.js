@@ -2231,7 +2231,10 @@ function validPlayResp(text) {
     } catch (e) { return false; }
 }
 
-// 串行铸造: own(/post) -> direct -> demo -> own 再一发 (猫版 own 间隔三发改串行两发, 无定时)。
+// 串行铸造: own(/post) -> direct -> demo -> direct 再一发。
+// 2026-11-19 实测: 站方 CF 拦全部 Workers 出口 (pornfhd-fetch /get 与 /post 均回 403
+// "Just a moment" 挑战页, site-fetch 回 502; demo 也是 Workers 出口同理已死),
+// 故 Worker 腿已死, 设备直连是唯一通路, 直连给两次机会。
 async function httpPostForm(url, bodyStr, referer) {
     referer = referer || REFERER;
     const formHeaders = {
@@ -2250,7 +2253,7 @@ async function httpPostForm(url, bodyStr, referer) {
         ['own', ownPost],
         ['direct', () => rawReq(url, formHeaders, 'POST', bodyStr)],
         ['demo', () => rawReq('https://test.cors.workers.dev/?' + url, { ...WD_HEADERS, 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', bodyStr)],
-        ['own2', ownPost],
+        ['direct2', () => rawReq(url, formHeaders, 'POST', bodyStr)],
     ];
     let sawJson = false;
     for (const [name, fn] of attempts) {

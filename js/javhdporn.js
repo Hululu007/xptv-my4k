@@ -483,7 +483,10 @@ function sawPlayJson(text) {
   } catch (e) { return false; }
 }
 
-// 串行: Worker /post -> $fetch.post 直连 -> (无任何通道拿到站方 JSON 时) Worker /post 再一发。
+// 串行: Worker /post -> $fetch.post 直连 -> (无任何通道拿到站方 JSON 时) 直连再一发。
+// 2026-11-19 实测: 站方 CF 拦全部 Workers 出口 (pornfhd-fetch /get 与 /post 均回 403
+// "Just a moment" 挑战页, site-fetch 回 502 "fetch failed"; site-fetch 本身正常,
+// missav/javhd.today 均 200), 故 Worker 腿已死, 设备直连是唯一通路, 直连给两次机会。
 // 回 {text, via, stage}: stage 'post-bad'=拿到 JSON 但被拒 / 'post-none'=通道不通。
 async function httpPostForm(url, bodyStr, referer) {
   const ref = referer || REFERER;
@@ -513,11 +516,11 @@ async function httpPostForm(url, bodyStr, referer) {
     if (validPlayResp(text)) return { text, via: name, stage: 'ok' };
   }
   if (!sawJson) {
-    // own 的上游 403 可能是站方对 Workers 出口的间歇拒绝, 无延时再打一发
+    // Worker 腿已死 (站方 CF 拦 Workers 出口, 见上), 直连再打一发 (瞬时失败兜底)
     let text = '';
-    try { text = await ownPost(); } catch (e) { text = ''; }
+    try { text = await directPost(); } catch (e) { text = ''; }
     if (sawPlayJson(text)) sawJson = true;
-    if (validPlayResp(text)) return { text, via: 'own2', stage: 'ok' };
+    if (validPlayResp(text)) return { text, via: 'direct2', stage: 'ok' };
   }
   return { text: '', via: '', stage: sawJson ? 'post-bad' : 'post-none' };
 }
